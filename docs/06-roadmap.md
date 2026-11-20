@@ -20,7 +20,7 @@ Throwaway code in `spikes/m0-omnisphere`. No Tauri. A plain window or console pr
 - [x] Scans the standard VST3 folders and prints each plugin's name, vendor, class ID and type.
 - [x] Scanning runs in a separate process, so a plugin that crashes on load does not kill the program.
 
-Done 2026-11-20 as `daw diag`, now `crucible diag`. Verified on the dev workstation, which has no plugins, so the
+Done 2026-11-20 as `crucible diag`. Verified on the dev workstation, which has no plugins, so the
 "prints each plugin" item is proven only by tests and broken fake bundles.
 
 **Step B code:** `spikes/m0-omnisphere` (`m0-play`). Untested. Checklist:
@@ -49,7 +49,8 @@ Rough size: days to write, then as long as the test loop with Dzyan takes.
 **Question it answers:** can a web-technology interface stay smooth doing DAW things, and do
 plugin windows behave inside a Tauri app?
 
-- [ ] A Tauri 2 app starts and shows the main-screen mockup from `05-gui-design-brief.md`.
+- [x] A Tauri 2 app starts and shows the main-screen mockup from `05-gui-design-brief.md`.
+  Done 2026-11-20 (D-025): `app/`, wired to the real engine, demo stand-ins for the rest.
 - [ ] A canvas timeline with five thousand synthetic clips scrolls and zooms at sixty frames per second.
 - [ ] Thirty-two meters update sixty times a second, driven from the Rust side over the bridge.
 - [ ] A playhead moves smoothly, interpolated in the UI from engine timestamps.

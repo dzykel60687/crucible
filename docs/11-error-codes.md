@@ -43,13 +43,13 @@ A native crash (most likely a plugin) is written as:
   dump file  : C:\Users\...\Crucible\logs\m0-play-play-omnisphere-2026-11-21_21-41-50.dmp
 ```
 
-- `crashed in` is the key line. A plugin file means the plugin crashed. A `rust-daw` exe means
+- `crashed in` is the key line. A plugin file means the plugin crashed. A `crucible` or `m0-play` exe means
   our bug. A Windows DLL such as `ntdll.dll` usually means memory was corrupted earlier, often
   by a plugin, so read the lines before the crash.
 - The exception names cover the common cases: access violation, unhandled C++ exception
   (`0xE06D7363`), illegal instruction (code built for a newer CPU), stack overflow, heap corruption.
 - The `.dmp` file opens in Visual Studio or WinDbg for a full stack. Neither is installed on the dev
-  workstation. The text lines are usually enough to decide whether the plugin or rust-daw is at fault.
+  workstation. The text lines are usually enough to decide whether the plugin or Crucible is at fault.
 - A plugin that crashes during **scanning** (`crucible plugin.scan`, `crucible diag`) only kills its own probe
   process. The scan reports `CRASHED E4004` with the same `crashed in` line and carries on.
 - A bug in our Rust code is a `PANIC E9002` line with the source file, line and a stack.
@@ -77,7 +77,7 @@ Limits:
 
 ## Rules for code that reports problems
 
-- Every user-visible failure gets a code from `crates/daw-diagnostics/src/codes.rs`. Add a new
+- Every user-visible failure gets a code from `crates/crucible-diagnostics/src/codes.rs`. Add a new
   code rather than reusing a vague one. Never change a published code's meaning or reuse its number.
 - Keep the raw evidence in the message: the OS error number (HRESULT), the path, the device or
   plugin name. The code says what kind of problem. The message says exactly which one.
@@ -92,7 +92,7 @@ Limits:
 - Crash capture: **Windows only today** (`platform_windows.rs`: SetUnhandledExceptionFilter,
   MiniDumpWriteDump). macOS and Linux need a signal handler (`platform_other.rs` is a stub).
   Ledger row "Crash capture" in `03-platform-notes.md`.
-- HRESULT decoding is WASAPI-specific and lives in `daw-audio-io/src/wasapi_exclusive.rs`. Each
+- HRESULT decoding is WASAPI-specific and lives in `crucible-audio-io/src/wasapi_exclusive.rs`. Each
   backend maps its own errors to the same E2xxx codes.
 - Some help texts name Windows settings. Add macOS and Linux wording when the ports start.
 

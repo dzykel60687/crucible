@@ -11,13 +11,13 @@ name = "m0-play"
 path = "src/main.rs"
 
 [dependencies]
-daw-plugin-host = { path = "../../crates/daw-plugin-host" }
-daw-audio-io = { path = "../../crates/daw-audio-io" }
+crucible-plugin-host = { path = "../../crates/crucible-plugin-host" }
+crucible-audio-io = { path = "../../crates/crucible-audio-io" }
 vst3-host = { workspace = true, features = ["cpal-backend", "midi-input"] }
 cpal = { workspace = true }
 hound = "3.5"
 anyhow = { workspace = true }
-daw-diagnostics = { workspace = true }
+crucible-diagnostics = { workspace = true }
 
 # PLATFORM: Windows only. Used for the main-thread message pump that plugin editor
 # windows need. macOS and Linux use their own event loops; see src/pump.rs.

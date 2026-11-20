@@ -1,0 +1,11 @@
+[package]
+name = "crucible-midi-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+midir = { workspace = true }
+crucible-diagnostics = { workspace = true }
+serde = { workspace = true }

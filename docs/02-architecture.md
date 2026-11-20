@@ -37,33 +37,33 @@ It knows nothing about Tauri or the web view. A command-line harness can drive i
 the interface replaceable (egui is the recorded fallback) and makes the engine testable by a
 machine with no screen and no ears.
 Decided in D-022: every user action is a *named* command in a table, so the GUI, an in-app
-console and the `crucible` CLI are three front ends over the same set. Built: `daw-engine/src/command.rs`.
+console and the `crucible` CLI are three front ends over the same set. Built: `crucible-engine/src/command.rs`.
 
 **The operating system is behind two seams.** Seam 1 is audio and MIDI devices. Seam 2 is
 plugin editor windows. Everything else is portable Rust. See `03-platform-notes.md`.
 
-## Workspace layout (proposed)
+## Workspace layout
 
 ```
-rust-daw/
-  Cargo.toml                 workspace root
+crucible/
+  Cargo.toml                    workspace root
   crates/
-    daw-engine/              headless core. Portable. No OS calls.
-    daw-audio-io/            SEAM 1. AudioBackend trait plus one module per driver API.
-    daw-midi-io/             SEAM 1. MidiBackend trait.
-    daw-plugin-host/         VST3 hosting and scanning. SEAM 2 lives in an editor_window module.
-    daw-project/             file format, save, load, autosave, crash journal. Portable.
-    daw-cli/                 the `crucible` binary: command-line front end over every command, plus
-                             diagnostics (devices, plugins, report). Shell, scripts, JSON output.
-    daw-diagnostics/         error codes, session logs, crash capture, machine facts. Every crate
-                             reports through it. Native crash capture is its only OS code.
-                             See 11-error-codes.md.
-  apps/
-    desktop/
-      src-tauri/             the Tauri shell. Adapter only.
-      ui/                    TypeScript front end.
+    crucible-engine/            headless core. Portable. No OS calls.
+    crucible-audio-io/          SEAM 1. AudioBackend trait plus one module per driver API.
+    crucible-midi-io/           SEAM 1. MidiBackend trait.
+    crucible-plugin-host/       VST3 hosting and scanning. SEAM 2 lives in an editor_window module.
+    crucible-project/           file format, save, load, autosave, crash journal. Portable.
+    crucible-cli/               the `crucible` binary: command-line front end over every command,
+                                plus diagnostics (devices, plugins, report). Shell, scripts, JSON.
+    crucible-diagnostics/       error codes, session logs, crash capture, machine facts. Every crate
+                                reports through it. Native crash capture is its only OS code.
+                                See 11-error-codes.md.
+  app/                          the window (crucible-app.exe)
+    src-tauri/                  Tauri 2 shell. One `exec` command into the engine. Adapter only.
+    src/                        TypeScript UI, no framework. Canvas for timeline, piano roll, meters.
+                                demo.ts holds every stand-in for engine features not built yet.
   spikes/
-    m0-omnisphere/           throwaway test program. Deleted or archived after M0.
+    m0-omnisphere/              throwaway test program. Deleted or archived after M0.
   docs/
 ```
 
@@ -239,7 +239,7 @@ These are where the time will go. None is a surprise.
 - Everything in "Engine", "The bridge", "Project store" and the front end is platform-neutral by design.
 - Audio and MIDI device code is Windows-specific today and sits in the two seam crates.
 - VST3 hosting is mostly portable. Three parts are not: locating plugin folders, loading the
-  plugin module, and the editor window. All three sit in `daw-plugin-host` behind small functions.
+  plugin module, and the editor window. All three sit in `crucible-plugin-host` behind small functions.
 - Path handling: always use relative paths with forward slashes inside `project.json`. Never
   store a drive letter. File names must be valid on all three systems.
 - The full ledger is `03-platform-notes.md`.

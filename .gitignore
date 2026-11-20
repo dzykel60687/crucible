@@ -4,3 +4,8 @@
 m0-*.bin
 m0-*.wav
 m0-*-log-*.txt
+
+# Window app
+/app/node_modules/
+/app/dist/
+/app/src-tauri/gen/

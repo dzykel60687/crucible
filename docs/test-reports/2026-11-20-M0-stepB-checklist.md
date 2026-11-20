@@ -28,7 +28,7 @@ Everything below. Do it on the **Lynx machine first**.
 
 ## Before you start
 
-1. Copy the folder `rust-daw\dist\m0` to the music machine, for example to `C:\m0`.
+1. Copy the folder `crucible\dist\m0` to the music machine, for example to `C:\m0`.
 2. In Windows sound settings, set the **default output** to the Lynx card (or the Behringer).
 3. Close other audio programs. Exclusive mode cannot take a device another program is using.
 4. Plug in the MIDI keyboard **before** starting the program.

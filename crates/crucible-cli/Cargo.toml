@@ -1,0 +1,21 @@
+[package]
+name = "crucible-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "crucible: the command-line front end over the engine and host command tables"
+
+[[bin]]
+name = "crucible"
+path = "src/main.rs"
+
+[dependencies]
+crucible-audio-io = { path = "../crucible-audio-io" }
+crucible-midi-io = { path = "../crucible-midi-io" }
+crucible-plugin-host = { path = "../crucible-plugin-host" }
+anyhow = { workspace = true }
+crucible-diagnostics = { workspace = true }
+crucible-engine = { path = "../crucible-engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,20 @@
+[package]
+name = "crucible-diagnostics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Error codes, session logs, crash capture and system facts"
+
+[dependencies]
+anyhow.workspace = true
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+dirs.workspace = true
+log.workspace = true
+# Machine facts for log headers on all three systems. Only the "system" part is needed.
+sysinfo = { version = "0.40.4", default-features = false, features = ["system"] }
+
+# PLATFORM: Windows only, for native crash capture in src/platform_windows.rs.
+# macOS and Linux will use libc signal handling instead; see src/platform_other.rs.
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_LibraryLoader", "Win32_System_Threading"] }

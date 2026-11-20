@@ -5,20 +5,20 @@
 //!
 //! Known shortcuts, acceptable only because this is a spike (docs/02-architecture.md):
 //! - Audio goes out through WASAPI. By default in *shared* mode to the Windows default
-//!   output. With `--exclusive`, in exclusive mode through `daw-audio-io` for low latency.
+//!   output. With `--exclusive`, in exclusive mode through `crucible-audio-io` for low latency.
 //!   No ASIO yet (open question Q4).
 //! - vst3-host's playback path locks the plugin with a mutex inside the audio callback.
 //!   If the editor holds that lock for a long time (e.g. while loading a big patch), audio
 //!   can drop out. That is a host-design artefact to note, not a verdict on the plugin.
 //! - The plugin runs in this process. A plugin crash ends the program; the crash handler in
-//!   `daw-diagnostics` records which module crashed and writes a dump next to the log.
+//!   `crucible-diagnostics` records which module crashed and writes a dump next to the log.
 
 mod exclusive_backend;
 mod pump;
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait};
-use daw_diagnostics::{self as diag, Code, CodeExt, DawError};
+use crucible_diagnostics::{self as diag, Code, CodeExt, DawError};
 use exclusive_backend::{ExclusiveBackend, StreamSlot};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
@@ -153,8 +153,8 @@ impl Opts {
 // ---------------------------------------------------------------- list
 
 fn list() -> Result<()> {
-    let folders = daw_plugin_host::plugin_paths::standard_vst3_folders();
-    let (reports, bundles) = daw_plugin_host::find_bundles(&folders);
+    let folders = crucible_plugin_host::plugin_paths::standard_vst3_folders();
+    let (reports, bundles) = crucible_plugin_host::find_bundles(&folders);
     diag::note("VST3 folders:");
     for r in &reports {
         diag::note(format!("  {}  ({})", r.folder.display(), if r.exists { "present" } else { "not present" }));
@@ -196,8 +196,8 @@ fn resolve_plugin(arg: &str) -> Result<PathBuf> {
     if p.exists() {
         return Ok(p.to_path_buf());
     }
-    let folders = daw_plugin_host::plugin_paths::standard_vst3_folders();
-    let (_, bundles) = daw_plugin_host::find_bundles(&folders);
+    let folders = crucible_plugin_host::plugin_paths::standard_vst3_folders();
+    let (_, bundles) = crucible_plugin_host::find_bundles(&folders);
     let needle = arg.to_lowercase();
     let stem = |b: &PathBuf| b.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
     let exact: Vec<&PathBuf> = bundles.iter().filter(|b| stem(b) == needle).collect();
@@ -423,7 +423,7 @@ struct TimingMonitor {
     last_check: Instant,
     last_heartbeat: Instant,
     started: Instant,
-    last: daw_audio_io::StreamStats,
+    last: crucible_audio_io::StreamStats,
     stream_failure_reported: bool,
 }
 

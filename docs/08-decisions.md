@@ -118,6 +118,13 @@ and Tailwind give a modern look quickly. Canvas 2D first, WebGL only if M1 deman
 Reversible: cheaply, until M2 builds real screens.
 Alternative worth knowing: Svelte is lighter. A Rust-written front end is possible but less mature.
 
+*Revised 2026-11-20, still Proposed, after D-024 (lean rule):* the first GUI was built with plain
+TypeScript, Vite and Canvas 2D, and no React, Tailwind or Radix. The whole UI is about 1,800 lines
+with one runtime dependency (`@tauri-apps/api`). The screen is one fixed layout redrawn from
+engine state, and canvases do the heavy drawing, so a component framework would add weight
+without solving anything here. Revisit only if dialogs and forms multiply past what plain DOM
+code handles cleanly.
+
 ## D-016. Plugins run in-process in version 1. *Proposed.*
 
 Reason: out-of-process hosting costs latency and a great deal of complexity. The defence against
@@ -147,7 +154,7 @@ crashing, a hanging and a noisy plugin.
 
 `wasapi` 0.27 is MIT-licensed and maintained by the author of the `rubato` resampler and
 CamillaDSP. cpal cannot do exclusive mode (T2). The portable API is `exclusive_capabilities`,
-`exclusive_stream_test` and `open_exclusive_output` in `daw-audio-io`. Format preference: 32-bit
+`exclusive_stream_test` and `open_exclusive_output` in `crucible-audio-io`. Format preference: 32-bit
 float, then 24-bit in 32, packed 24-bit, 32-bit int, 16-bit. Conversion from the engine's float
 clamps and does not dither, which is acceptable for monitoring only.
 Verified on the dev laptop's Realtek output: 3 ms buffer, steady timing, zero dropouts.
@@ -159,7 +166,7 @@ easy for you and others to diagnose."
 
 - Every user-visible problem carries a stable code (`E2004`, `W2101`) with a one-line meaning
   and what to try. Codes are grouped by area and map to process exit codes. The list lives in
-  `crates/daw-diagnostics/src/codes.rs`; `docs/11-error-codes.md` is generated from it and a test
+  `crates/crucible-diagnostics/src/codes.rs`; `docs/11-error-codes.md` is generated from it and a test
   keeps them in step.
 - One log file per run in the per-user log folder, written line by line rather than at exit,
   so a crash cannot lose it. The header records build fingerprint, command line, computer, OS,
@@ -196,7 +203,7 @@ named surface:
   set cannot do.
 - An in-app console runs the same commands as text, and shows the command behind each GUI action.
   Exchange's old management console worked this way with PowerShell cmdlets.
-- `daw` runs the same commands headless against a project file (batch export, tests, scripts).
+- `crucible` runs the same commands headless against a project file (batch export, tests, scripts).
   Later, optionally, it can attach to the running app over a local pipe restricted to the current user.
 - The undo history and crash-recovery journal are lists of these commands, so a journal doubles
   as a replayable script and a bug reproduction.
@@ -212,8 +219,8 @@ Cost: every feature needs a command definition before its button. That costs a l
 and pays back in tests, scripting and diagnosis.
 
 Implemented 2026-11-20 at Dzyan's request, ahead of the rest of M2: the command framework
-(`daw-engine/src/command.rs`), the engine's project and track commands with undo, redo and the
-crash journal (`daw-engine/src/lib.rs`), the project store (`daw-project`), and the `crucible`
+(`crucible-engine/src/command.rs`), the engine's project and track commands with undo, redo and the
+crash journal (`crucible-engine/src/lib.rs`), the project store (`crucible-project`), and the `crucible`
 CLI with one-shot, `-c`, `run` script, `shell` and `--json` modes. Not built: transport, audio
 graph and plugins in the engine. Those wait for M0 to pass. The attach-to-running-app pipe waits
 for the desktop app.
@@ -231,8 +238,12 @@ Implementation choices:
 ## D-023. The product is called Crucible. *Decided by Dzyan 2026-11-20.*
 
 User-facing text, the `crucible` command-line binary and the per-user folder
-(`%LOCALAPPDATA%\Crucible`) use the name. The repository folder stays `rust-daw` and the crates
-keep their internal `daw-*` names: renaming them changes nothing a user sees and only adds churn.
+(`%LOCALAPPDATA%\Crucible`) use the name.
+
+*Amended by Dzyan 2026-11-20:* he found the leftover `daw` names confusing, so the internals were
+renamed too: the repository folder is `crucible` (was `rust-daw`) and the crates are `crucible-*`
+(were `daw-*`). The error type keeps the name `DawError`: "DAW" there is the kind of program, not the
+old name.
 Not checked: trademarks. That only matters if Crucible is ever distributed beyond the small group.
 
 ---
@@ -243,6 +254,31 @@ Not checked: trademarks. That only matters if Crucible is ever distributed beyon
 rules and the budget table in `01-vision-and-priorities.md`, and the motion and effects budget in
 `05-gui-design-brief.md`. Claude is asked to push back on GUI requests that cost frames or engine
 time and to offer a middle ground.
+
+## D-025. The first window is a full clickable mockup on the real engine. *Asked for by Dzyan 2026-11-20.*
+
+He asked for the GUI now, "all the theoretical tabs and buttons ... with smooth, but minimal
+animations", to evaluate the look. Built as `app/` (`crucible-app.exe`), ahead of M0 passing.
+- Everything the engine can already do is real and goes through commands: tracks, gain, pan,
+  mute, solo, rename, move, remove, tempo, time signature, sample rate, master gain, new, open,
+  save, undo, redo and history. The console tab runs any command.
+- Everything else is a stand-in in `app/src/demo.ts` with a "demo" tag on screen: transport,
+  clips, piano-roll notes, meters, loudness, devices, plugins, settings values, export.
+- Only what `05-gui-design-brief.md` lists is on screen, nothing extra: top bar, track headers,
+  timeline, and Mixer, Piano roll, Clip editor and Console tabs. Settings is one page. Menus are
+  one level deep. Claude added the in-app console from D-022 and history in the project menu.
+- Motion: 120 ms transform and opacity transitions on state changes only. The draw loop stops
+  when nothing moves. Work per playing frame measured at 0.38 ms in Chromium (budget 8 ms), after
+  batching waveform drawing into one path. Before that it was 2.1 ms.
+- Font: the system font (Segoe UI Variable on Windows) for now. The brief says to bundle one; the
+  candidate, Inter, is OFL-licensed, which needs Dzyan's yes under the licence rule.
+- The M1 stress items (5,000 clips, 32 meters from Rust, plugin window focus) are still open.
+- Measured on the dev laptop, release build: window up and demo song built 0.69 s after launch
+  (budget 1 s). `crucible-app.exe` is 9.4 MB. **Memory misses the 150 MB budget:** 391 MB private
+  across 7 processes, the app at 29 MB and the rest WebView2's own browser, GPU and renderer
+  processes. This is the baseline cost of a web view, not of Crucible's code. To decide at M1: count
+  the web view separately in the budget, trim it (WebView2 flags, single renderer), or take it as a
+  reason for the egui fallback (D-006).
 
 ---
 

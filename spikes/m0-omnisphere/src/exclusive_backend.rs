@@ -1,9 +1,9 @@
 //! Adapter: lets vst3-host's playback path output through our exclusive-mode stream.
 //!
 //! Portable code. The exclusive stream itself lives behind the audio seam in
-//! `daw-audio-io`, which returns an error on systems where exclusive mode does not apply.
+//! `crucible-audio-io`, which returns an error on systems where exclusive mode does not apply.
 
-use daw_diagnostics::DawError;
+use crucible_diagnostics::DawError;
 use std::sync::{Arc, Mutex};
 use vst3_host::{AudioBackend, AudioConfig, AudioStream};
 
@@ -19,7 +19,7 @@ impl std::fmt::Display for BackendError {
 impl std::error::Error for BackendError {}
 
 /// Shared slot so the program can read the stream's details and timing while it runs.
-pub type StreamSlot = Arc<Mutex<Option<daw_audio_io::ExclusiveOutput>>>;
+pub type StreamSlot = Arc<Mutex<Option<crucible_audio_io::ExclusiveOutput>>>;
 
 pub struct ExclusiveBackend {
     pub device: Option<String>,
@@ -77,7 +77,7 @@ impl AudioBackend for ExclusiveBackend {
         data_callback: Box<dyn FnMut(&mut [f32]) + Send>,
         _error_callback: Box<dyn FnMut(BackendError) + Send>,
     ) -> Result<ExclusiveStream, BackendError> {
-        let out = daw_audio_io::open_exclusive_output(
+        let out = crucible_audio_io::open_exclusive_output(
             self.device.clone(),
             config.sample_rate as u32,
             self.period_frames,
@@ -99,6 +99,6 @@ impl AudioBackend for ExclusiveBackend {
         _data_callback: Box<dyn FnMut(&[f32]) + Send>,
         _error_callback: Box<dyn FnMut(BackendError) + Send>,
     ) -> Result<ExclusiveStream, BackendError> {
-        Err(BackendError(DawError::new(daw_diagnostics::Code::StreamStartFailed, "audio input is not part of the M0 spike")))
+        Err(BackendError(DawError::new(crucible_diagnostics::Code::StreamStartFailed, "audio input is not part of the M0 spike")))
     }
 }

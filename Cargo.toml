@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "spikes/*"]
+members = ["crates/*", "spikes/*", "app/src-tauri"]
 
 [workspace.package]
 version = "0.0.1"
@@ -18,7 +18,7 @@ vst3-host = { version = "0.11", default-features = false }
 dirs = "6"
 wasapi = "0.27"
 log = "0.4"
-daw-diagnostics = { path = "crates/daw-diagnostics" }
+crucible-diagnostics = { path = "crates/crucible-diagnostics" }
 
 # Release builds keep line tables in the separate .pdb (Windows) so crash and panic stacks in
 # logs name source lines. The .exe size is unaffected on Windows.

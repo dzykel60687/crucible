@@ -7,7 +7,7 @@ reference targets. Designed so macOS and Linux can follow without a rewrite.
 Small, fast and robust by design: plain data, few dependencies, measured budgets, and every
 action available as a command (`crucible help`). The GUI is built on top of the same commands.
 
-Status: milestone M0. Start with `docs/STATUS.md`. The folder is still called `rust-daw`.
+Status: milestone M0. Start with `docs/STATUS.md`.
 
 Why build it: every existing DAW carries decades of accumulated options. This one keeps
 only the essentials and puts sound quality and a calm interface first. It is a learning

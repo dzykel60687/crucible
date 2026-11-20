@@ -1,0 +1,12 @@
+[package]
+name = "crucible-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Crucible's headless engine: command table, project editing, undo, crash journal"
+
+[dependencies]
+crucible-diagnostics = { workspace = true }
+crucible-project = { path = "../crucible-project" }
+serde_json = { workspace = true }

@@ -7,8 +7,8 @@
 
 A simple digital audio workstation (DAW). Rust engine, Tauri 2 shell, TypeScript interface.
 Built for Dzyan, his family and a few fellow sound engineers. Not a mass-market product.
-The product is called **Crucible** (D-023). The folder stays `rust-daw` and the crates keep
-their internal `daw-*` names; user-facing text, the `crucible` binary and the log folder use the name.
+The product is called **Crucible** (D-023). Everything carries the name: the repository folder
+`crucible`, the `crucible-*` crates, the `crucible` binary, the window `crucible-app` and the log folder.
 This is a personal project. Nothing from Dzyan's employer belongs in this repo.
 
 ## Priorities, in order
@@ -51,9 +51,9 @@ When two of these conflict, the lower number wins. Details: `docs/01-vision-and-
 9. **Docs rule.** Every design doc keeps a "Platform notes" section current. If code and docs
    disagree, fix the doc in the same session.
 10. **Diagnostics rule.** Dzyan asked for errors and logs that anyone can diagnose. Every
-   user-visible failure carries a code from `crates/daw-diagnostics/src/codes.rs` and keeps the raw
+   user-visible failure carries a code from `crates/crucible-diagnostics/src/codes.rs` and keeps the raw
    evidence (OS error number, path, device or plugin name) in its message. Programs start a session
-   log and end with `daw_diagnostics::finish`. New code means `crucible codes --markdown` regenerates the
+   log and end with `crucible_diagnostics::finish`. New code means `crucible codes --markdown` regenerates the
    table in `docs/11-error-codes.md`. When Dzyan reports a problem, ask for `crucible report` output first.
 11. **Lean rule** (D-024, details in `docs/01-vision-and-priorities.md`). Build it like id Software
    built Doom and Quake: plain data and plain functions, few dependencies, no layers that only

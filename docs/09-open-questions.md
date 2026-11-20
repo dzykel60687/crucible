@@ -16,7 +16,8 @@ strike it here with the date.
 | Q4 | ASIO licence: accept GPLv3 for the project, or sign Steinberg's proprietary ASIO agreement? | The ASIO SDK is needed to build the ASIO path. Private use is fine either way. It matters once builds are given to other people. Also needs LLVM installed to build. | M0 ASIO step |
 | Q5 | Will the project be open source, and under what licence? | Decides whether GPL reference code could ever be used, see D-011 | Nothing yet |
 | Q6 | May a free VST3 instrument be installed on the dev machine for automated tests? Surge XT is the suggestion. | Lets a machine test plugin hosting without Omnisphere | Nice to have for M0 |
-| Q7 | Standing approval to run `git init` and make local commits as work proceeds? | No repository exists yet, so there are no checkpoints. Local only, no remote. | Nothing, but strongly recommended |
+| Q7 | Standing approval to commit (and push to `dzykel60687/crucible`) as work proceeds? | Repo created and first pushes made 2026-11-20 at his request. Per-push asks remain until he says otherwise. | Nothing, but saves round trips |
+| Q11 | Bundle the Inter typeface (SIL Open Font License) so the UI looks identical on every machine? | The licence rule asks before anything not MIT/Apache/BSD/zlib/MPL. OFL is the standard font licence and allows bundling. | Before the look is final |
 | ~~Q8~~ | ~~What should the product be called?~~ **Answered 2026-11-20: Crucible** (D-023). | | |
 | Q9 | Should the built-in EQ, compressor and reverb from `..\music-editor` be included, or should effects be VST3 only? | Scope of M4 | M4 |
 | Q10 | Confirm the *Proposed* decisions: D-005, D-011, D-013 to D-017. | So they stop being assumptions | Before M2 |
