@@ -132,7 +132,9 @@ Related: `..\music-editor` is Dzyan's own MIT Rust audio editor with reusable DS
   0.38 ms while playing. Actual frame rate could not be judged (the pane was throttled in the
   background); Dzyan judges smoothness on his screens.
 - Dzyan asked to clear out the old `daw` names: crates are now `crucible-*`, docs and test paths
-  updated, D-023 amended. `DawError` kept (DAW = the kind of program).
+  updated, D-023 amended. `DawError` kept (DAW = the kind of program). Renaming the folder
+  `rust-daw` → `crucible` failed because the folder was in use; Dzyan renames it when nothing has it
+  open. Docs already use `crucible`. Also update `Development\.claude\launch.json` (crucible-ui).
 
 ### 2026-11-20, command layer and name (Claude Opus 5.5)
 
