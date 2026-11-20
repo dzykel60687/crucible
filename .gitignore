@@ -1,0 +1,6 @@
+/target/
+/dist/
+# Test-program output written next to wherever it is run
+m0-*.bin
+m0-*.wav
+m0-*-log-*.txt

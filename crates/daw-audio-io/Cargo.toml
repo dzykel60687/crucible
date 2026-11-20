@@ -1,0 +1,19 @@
+[package]
+name = "daw-audio-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cpal = { workspace = true }
+serde = { workspace = true }
+daw-diagnostics = { workspace = true }
+
+# PLATFORM: Windows only. WASAPI exclusive mode (cpal can only do shared mode).
+[target.'cfg(windows)'.dependencies]
+wasapi = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Only to build fake WASAPI errors in tests. Already in the tree through wasapi.
+windows-core = "0.62"

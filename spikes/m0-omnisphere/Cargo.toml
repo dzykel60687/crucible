@@ -1,0 +1,25 @@
+[package]
+name = "m0-omnisphere"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "THROWAWAY spike for milestone M0 step B: host one VST3 instrument, play it live, render it offline"
+
+[[bin]]
+name = "m0-play"
+path = "src/main.rs"
+
+[dependencies]
+daw-plugin-host = { path = "../../crates/daw-plugin-host" }
+daw-audio-io = { path = "../../crates/daw-audio-io" }
+vst3-host = { workspace = true, features = ["cpal-backend", "midi-input"] }
+cpal = { workspace = true }
+hound = "3.5"
+anyhow = { workspace = true }
+daw-diagnostics = { workspace = true }
+
+# PLATFORM: Windows only. Used for the main-thread message pump that plugin editor
+# windows need. macOS and Linux use their own event loops; see src/pump.rs.
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "windef"] }
