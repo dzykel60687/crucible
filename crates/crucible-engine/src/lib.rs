@@ -17,6 +17,7 @@
 //!
 //! Portability: no OS-specific code, no UI or Tauri dependency.
 
+mod clips;
 pub mod command;
 
 pub use command::{Args, Effect, Kind, Reply, Spec, Value};
@@ -25,6 +26,7 @@ use crucible_diagnostics::{self as diag, Code, DawError};
 use crucible_project::{self as store, Journal, Project, TrackKind};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 const UNDO_LIMIT: usize = 1000;
 const MAX_TRACKS: usize = 512;
@@ -41,6 +43,8 @@ pub struct Engine {
     journal: Option<Journal>,
     /// Every non-read command run this session, in canonical form.
     history: Vec<String>,
+    /// Clips copied with edit.copy or edit.cut. Shared by every front end.
+    clipboard: clips::Clipboard,
 }
 
 struct Step {
@@ -64,6 +68,7 @@ impl Engine {
             redo: Vec::new(),
             journal: None,
             history: Vec::new(),
+            clipboard: clips::Clipboard::default(),
         }
     }
 
@@ -92,13 +97,13 @@ impl Engine {
     }
 
     pub fn specs() -> &'static [Spec<Engine>] {
-        SPECS
+        &ALL_SPECS
     }
 
     /// Parse and run one command given as tokens, name first.
     pub fn execute(&mut self, tokens: &[String]) -> Result<Reply, DawError> {
         let name = tokens.first().ok_or_else(|| DawError::new(Code::UnknownCommand, "empty command"))?;
-        let spec = command::find(SPECS, name).ok_or_else(|| command::unknown(name, SPECS.iter().map(|s| s.name)))?;
+        let spec = command::find(&ALL_SPECS, name).ok_or_else(|| command::unknown(name, ALL_SPECS.iter().map(|s| s.name)))?;
         let args = command::parse(spec, &tokens[1..])?;
         self.run(spec, args)
     }
@@ -134,7 +139,7 @@ impl Engine {
                 }
                 self.redo.clear();
             }
-            if matches!(spec.effect, Effect::Edit | Effect::History) && changed {
+            if (matches!(spec.effect, Effect::Edit | Effect::History) && changed) || spec.effect == Effect::Clipboard {
                 self.write_journal(&line);
             }
         }
@@ -208,8 +213,8 @@ impl Engine {
             let result = command::split_statements(line).and_then(|stmts| {
                 stmts.iter().try_for_each(|tokens| {
                     let name = tokens.first().map(String::as_str).unwrap_or("");
-                    let spec = command::find(SPECS, name)
-                        .filter(|s| matches!(s.effect, Effect::Edit | Effect::History))
+                    let spec = command::find(&ALL_SPECS, name)
+                        .filter(|s| matches!(s.effect, Effect::Edit | Effect::History | Effect::Clipboard))
                         .ok_or_else(|| DawError::new(Code::BadArgument, format!("'{name}' cannot appear in a journal")))?;
                     let args = command::parse(spec, &tokens[1..])?;
                     self.run(spec, args).map(|_| ())
@@ -240,6 +245,9 @@ const KINDS: &[&str] = &["audio", "instrument"];
 const ON_OFF: &[&str] = &["on", "off"];
 const DISCARD: command::Arg = opt("discard", Kind::Bool, "drop unsaved changes instead of refusing");
 const TRACK: command::Arg = req("track", Kind::Track, "name, position (1, 2, ...) or id (#3)");
+
+/// The engine's command table: the rows below plus the clip, note and clipboard rows in clips.rs.
+static ALL_SPECS: LazyLock<Vec<Spec<Engine>>> = LazyLock::new(|| SPECS.iter().chain(clips::SPECS).map(|s| Spec { ..*s }).collect());
 
 static SPECS: &[Spec<Engine>] = &[
     Spec {
@@ -547,7 +555,11 @@ fn track_remove(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let i = e.track_at(a, "track")?;
     let data = track_json(&e.project, i);
     let t = e.project.tracks.remove(i);
-    Ok(Reply::new(format!("Removed track '{}' (id #{})", t.name, t.id), data))
+    let before = e.project.clips.len();
+    e.project.clips.retain(|c| c.track != t.id);
+    let gone = before - e.project.clips.len();
+    let clips = if gone > 0 { format!(" and its {gone} clip(s)") } else { String::new() };
+    Ok(Reply::new(format!("Removed track '{}' (id #{}){clips}", t.name, t.id), data))
 }
 
 fn track_rename(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
@@ -652,6 +664,7 @@ fn history(e: &mut Engine, _: &Args) -> Result<Reply, DawError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crucible_project::{Content, PPQ};
 
     fn run(e: &mut Engine, line: &str) -> Result<Reply, DawError> {
         let mut last = Reply::text("");
@@ -747,9 +760,96 @@ mod tests {
     #[test]
     fn every_command_has_help_and_unique_name() {
         let mut names = std::collections::HashSet::new();
-        for s in SPECS {
+        for s in ALL_SPECS.iter() {
             assert!(names.insert(s.name), "{} twice", s.name);
             assert!(!s.help.is_empty() && s.args.iter().all(|a| !a.help.is_empty()), "{}", s.name);
         }
+    }
+
+    fn clip(e: &Engine, id: u32) -> &crucible_project::Clip {
+        &e.project().clips[e.project().clip_index(id).expect("clip exists")]
+    }
+
+    #[test]
+    fn clip_edits_are_single_undo_steps_and_refuse_bad_results() {
+        let mut e = Engine::new();
+        run(&mut e, "project.demo").unwrap();
+        assert_eq!(e.project().clips.len(), 9);
+        assert_eq!(run(&mut e, "project.demo").unwrap_err().code, Code::ClipEditRefused, "needs an empty project");
+
+        // Two clips move together; one undo puts both back.
+        let before = e.project().clone();
+        run(&mut e, "clip.move #1,#2 --by 4").unwrap();
+        assert_eq!((clip(&e, 1).start, clip(&e, 2).start), (4 * PPQ, 36 * PPQ));
+        run(&mut e, "undo").unwrap();
+        assert_eq!(e.project(), &before);
+
+        // Audio may not land on an instrument track; nothing changes.
+        assert_eq!(run(&mut e, "clip.move #1 --tracks 1").unwrap_err().code, Code::ClipEditRefused);
+        assert_eq!(run(&mut e, "clip.move #1 --by -1").unwrap_err().code, Code::ClipEditRefused, "before bar 1");
+        assert_eq!(e.project(), &before);
+
+        // Trim: Vox take 3 (#8) starts at 16 and shows its source from beat 2, so 2 beats can be revealed.
+        run(&mut e, "clip.trim #8 --start 15").unwrap();
+        assert_eq!((clip(&e, 8).start, clip(&e, 8).offset, clip(&e, 8).length), (15 * PPQ, PPQ, 17 * PPQ));
+        assert_eq!(run(&mut e, "clip.trim #8 --start 13").unwrap_err().code, Code::ClipEditRefused, "past the source start");
+        assert_eq!(run(&mut e, "clip.trim #8 --end 15").unwrap_err().code, Code::ClipEditRefused, "no length left");
+
+        // Split a MIDI clip: notes are shared out, none lost or duplicated.
+        let notes = |e: &Engine, id: u32| match &clip(e, id).content {
+            Content::Midi { notes } => notes.len(),
+            Content::Audio { .. } => 0,
+        };
+        let total = notes(&e, 5);
+        let r = run(&mut e, "clip.split #5 16").unwrap();
+        let right = r.data["created"][0].as_u64().unwrap() as u32;
+        assert_eq!(notes(&e, 5) + notes(&e, right), total);
+        assert_eq!((clip(&e, 5).end(), clip(&e, right).start), (16 * PPQ, 16 * PPQ));
+
+        // Copy with no position goes right after the original.
+        let r = run(&mut e, "clip.copy #9").unwrap();
+        let dup = r.data["created"][0].as_u64().unwrap() as u32;
+        assert_eq!(clip(&e, dup).start, clip(&e, 9).end());
+
+        // Removing a track removes its clips.
+        run(&mut e, "track.remove Vox").unwrap();
+        assert!(e.project().clip_index(9).is_none() && e.project().clip_index(dup).is_none());
+        assert_eq!(run(&mut e, "clip.gain #9 -3").unwrap_err().code, Code::ClipNotFound);
+    }
+
+    #[test]
+    fn notes_and_quantize() {
+        let mut e = Engine::new();
+        run(&mut e, "track.add Keys --kind instrument; clip.add Keys 8 4").unwrap();
+        run(&mut e, "note.add #1 60 0.1 1; note.add #1 64 1.9 0.5 --velocity 90").unwrap();
+        assert_eq!(run(&mut e, "note.add #1 200 0 1").unwrap_err().code, Code::ValueOutOfRange);
+        run(&mut e, "note.edit #1 60 0.1 --to-pitch 62 --length 2").unwrap();
+        assert_eq!(run(&mut e, "note.remove #1 60 0.1").unwrap_err().code, Code::NoteNotFound);
+        run(&mut e, "clip.quantize #1 --grid 1").unwrap();
+        let Content::Midi { notes } = &clip(&e, 1).content else { panic!() };
+        assert_eq!(notes.iter().map(|n| (n.pitch, n.start)).collect::<Vec<_>>(), vec![(62, 0), (64, 2 * PPQ)]);
+        run(&mut e, "note.remove #1 64 2").unwrap();
+        assert_eq!(run(&mut e, "clip.add Keys 0 0").unwrap_err().code, Code::ClipEditRefused, "zero length");
+    }
+
+    #[test]
+    fn clipboard_paste_survives_a_crash() {
+        let dir = temp("clipboard");
+        let mut e = Engine::new();
+        assert_eq!(run(&mut e, "edit.paste 1 0").unwrap_err().code, Code::TrackNotFound);
+        run(&mut e, "project.demo").unwrap();
+        assert_eq!(run(&mut e, "edit.paste 1 0").unwrap_err().code, Code::ClipboardEmpty);
+        run(&mut e, &format!("project.save \"{}\"", dir.display())).unwrap();
+        // Copy two clips on different tracks; paste keeps their spacing in time and across tracks.
+        run(&mut e, "edit.copy #3,#5; edit.paste Bass 64").unwrap();
+        let pasted: Vec<_> = e.project().clips.iter().filter(|c| c.start >= 64 * PPQ).map(|c| (c.track, c.start)).collect();
+        assert_eq!(pasted, vec![(2, 72 * PPQ), (3, 64 * PPQ)]);
+        let expected = e.project().clone();
+        drop(e); // "crash": nothing saved since the copy and paste
+
+        let mut again = Engine::new();
+        run(&mut again, &format!("project.open \"{}\"", dir.display())).unwrap();
+        assert_eq!(again.project(), &expected, "journal replays the copy, then the paste");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

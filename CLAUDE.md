@@ -88,3 +88,4 @@ He decides; record the outcome in `docs/08-decisions.md`.
 | `docs/09-open-questions.md` | Things only Dzyan can answer, and unverified technical claims |
 | `docs/10-references.md` | Sources, crates, reference code, licences |
 | `docs/11-error-codes.md` | Error codes, where logs go, reading a crash, exit codes |
+| `docs/12-known-daw-problems.md` | Problems other DAWs and hosts keep hitting, with sources, and what Crucible does about each. Read the relevant section before building drivers, plugins, MIDI, recording or export |

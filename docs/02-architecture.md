@@ -73,11 +73,16 @@ Getting this wrong is the classic way audio software fails, so it is fixed up fr
 
 | Thread | Owns | Rules |
 |---|---|---|
-| **Main** | The OS event loop, which Tauri owns. Plugin editor windows. VST3 edit-controller calls. | Never blocks on the audio thread. Plugin windows are created and serviced here and nowhere else. |
-| **Audio** | The driver callback. Runs the render graph. Calls each plugin's process function. | The real-time rule, below. |
-| **Engine control** | Applies commands, edits the project model, builds new graph snapshots. | Hands snapshots to the audio thread by atomic swap. Never touched by the audio thread except through lock-free queues. |
+| **Main** | The OS event loop, which Tauri owns (the CLI runs its own for headless export). Plugin editor windows. **Every VST3 call except `process` and `setProcessing`:** creation, `setupProcessing`, `setActive`, bus layout, state get and set, latency queries, all controller calls. | Never blocks on the audio thread. The engine posts plugin work to a main-thread job queue that the front end drains (`12-known-daw-problems.md` P3). |
+| **Audio** | The driver callback. Runs the render graph. Calls each plugin's `process`. | The real-time rule, below. |
+| **Engine control** | Applies commands, edits the project model, builds new graph snapshots. | Hands snapshots to the audio thread by atomic swap. Never calls into a plugin itself: it asks the main thread. |
 | **Disk** | Record writer, clip stream reader, waveform peak builder. | Talk to the audio thread only through ring buffers. |
 | **Scanner process** | A separate executable that loads plugins to read their metadata. | If a plugin crashes during a scan, only the scanner dies. |
+
+Host callbacks from plugins (`restartComponent`, `setDirty`, parameter edits) arrive on any thread,
+including the audio thread and in the middle of a state load. They only set a flag or push to a
+lock-free queue and return; the main thread acts on them later (`12-known-daw-problems.md` P4).
+Corrected 2026-11-21 after that research; the earlier table left plugin lifecycle calls unassigned.
 
 ### The real-time rule
 

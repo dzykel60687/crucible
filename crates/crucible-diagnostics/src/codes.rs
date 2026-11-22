@@ -151,6 +151,14 @@ codes! {
         "Check free disk space and that you may write to the folder. OneDrive folders can lock files while syncing. The previous save is untouched.";
     RecoveryIncomplete = "W5010", "Crash recovery could not replay every unsaved change",
         "The project opened with the changes up to the one named. The full journal was kept beside the project.";
+    ClipNotFound = "E5011", "No clip matches",
+        "Refer to clips by id: #4, or several as #4,#7. `clip.list` shows them.";
+    ClipEditRefused = "E5012", "That clip edit is not possible",
+        "The message says why, for example a clip would start before bar 1, end before it starts, or land on a track of the wrong kind.";
+    ClipboardEmpty = "E5013", "Nothing has been copied",
+        "Copy or cut clips first with `edit.copy` or `edit.cut`.";
+    NoteNotFound = "E5014", "No note matches",
+        "Notes are found by pitch and start, in beats from the clip's start. `clip.notes <clip>` lists them.";
 
     // ---- 9: crashes and bugs
     NativeCrash = "E9001", "The program crashed",

@@ -52,6 +52,8 @@ pub enum Effect {
     Edit,
     /// Undo and redo: journaled, not itself undoable.
     History,
+    /// Fills the engine's clipboard: always journaled so a later paste replays, never undoable.
+    Clipboard,
     /// New, open, save: changes which project is loaded or where it lives.
     File,
     /// Outside the project: devices, plugins, diagnostics. Logged, never journaled.

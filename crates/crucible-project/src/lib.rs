@@ -26,9 +26,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// File format version written by this build. Bump it when a change would confuse an older build.
-pub const FORMAT: u32 = 1;
+/// 1: tracks only. 2: clips and notes (a format-1 file opens with no clips).
+pub const FORMAT: u32 = 2;
 pub const PROJECT_FILE: &str = "project.json";
 pub const JOURNAL_FILE: &str = "journal.log";
+
+/// Musical time resolution: ticks per quarter note. Positions are whole ticks, never floats, so
+/// edits never drift. 960 divides by 2, 3, 4, 5, 6, 8, 10, 12, 15 and 16.
+pub const PPQ: i64 = 960;
 
 /// Sample rates a project may use.
 pub const SAMPLE_RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
@@ -45,6 +50,61 @@ pub struct Project {
     pub tracks: Vec<Track>,
     /// Ids are never reused, so a command journal stays valid after deletions.
     pub next_track_id: u32,
+    #[serde(default)]
+    pub clips: Vec<Clip>,
+    #[serde(default = "first_id")]
+    pub next_clip_id: u32,
+}
+
+fn first_id() -> u32 {
+    1
+}
+
+/// A region on a track's timeline showing a window onto some content.
+///
+/// The content (audio file or MIDI notes) has its own time origin. The clip shows the part from
+/// `offset` to `offset + length` of it, placed at `start` on the timeline. Trimming the left edge
+/// moves `start` and `offset` together, so the content stays where it was in time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Clip {
+    pub id: u32,
+    pub track: u32,
+    pub name: String,
+    /// Timeline position, in ticks.
+    pub start: i64,
+    /// Visible length, in ticks. Always above zero.
+    pub length: i64,
+    /// Where the visible part begins inside the content, in ticks. Never below zero.
+    pub offset: i64,
+    pub gain_db: f64,
+    pub content: Content,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Content {
+    /// `source` is a file name in the project's audio folder. Until audio import exists (M2) its
+    /// length is kept in ticks; with real files it becomes a sample count.
+    Audio { source: String, source_length: i64 },
+    Midi { notes: Vec<Note> },
+}
+
+/// A MIDI note. `start` is in ticks from the content origin, not from the clip start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Note {
+    pub pitch: u8,
+    pub start: i64,
+    pub length: i64,
+    pub velocity: u8,
+}
+
+impl Clip {
+    pub fn end(&self) -> i64 {
+        self.start + self.length
+    }
+    pub fn is_audio(&self) -> bool {
+        matches!(self.content, Content::Audio { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,6 +146,8 @@ impl Default for Project {
             master_gain_db: 0.0,
             tracks: Vec::new(),
             next_track_id: 1,
+            clips: Vec::new(),
+            next_clip_id: 1,
         }
     }
 }
@@ -101,6 +163,51 @@ impl Project {
 
     pub fn track_index(&self, id: u32) -> Option<usize> {
         self.tracks.iter().position(|t| t.id == id)
+    }
+
+    pub fn clip_index(&self, id: u32) -> Option<usize> {
+        self.clips.iter().position(|c| c.id == id)
+    }
+
+    /// Add a clip with the next free id and return the id. The caller has checked it with `check_clip`.
+    pub fn add_clip(&mut self, mut clip: Clip) -> u32 {
+        clip.id = self.next_clip_id;
+        self.next_clip_id += 1;
+        self.clips.push(clip);
+        self.next_clip_id - 1
+    }
+
+    /// Why a clip would break the model, if it would. Used by every clip command and by `validate`.
+    pub fn check_clip(&self, c: &Clip) -> Result<(), String> {
+        let Some(t) = self.track_index(c.track).map(|i| &self.tracks[i]) else {
+            return Err(format!("clip #{} is on track #{}, which does not exist", c.id, c.track));
+        };
+        if c.is_audio() != (t.kind == TrackKind::Audio) {
+            let what = if c.is_audio() { "an audio clip" } else { "a MIDI clip" };
+            return Err(format!("{what} cannot go on the {} track '{}'", t.kind.as_str(), t.name));
+        }
+        if c.start < 0 {
+            return Err(format!("clip #{} would start before bar 1", c.id));
+        }
+        if c.length <= 0 {
+            return Err(format!("clip #{} would have no length", c.id));
+        }
+        if c.offset < 0 {
+            return Err(format!("clip #{} would start before its content begins", c.id));
+        }
+        if !c.gain_db.is_finite() {
+            return Err(format!("clip #{} has an invalid gain", c.id));
+        }
+        match &c.content {
+            Content::Audio { source_length, .. } if c.offset + c.length > *source_length => {
+                Err(format!("clip #{} would run past the end of its audio", c.id))
+            }
+            Content::Midi { notes } => notes
+                .iter()
+                .find(|n| n.pitch > 127 || !(1..=127).contains(&n.velocity) || n.length <= 0 || n.start < 0)
+                .map_or(Ok(()), |n| Err(format!("clip #{} has an invalid note (pitch {}, velocity {})", c.id, n.pitch, n.velocity))),
+            _ => Ok(()),
+        }
     }
 
     /// Check the invariants every command relies on. Used after loading a file.
@@ -129,6 +236,13 @@ impl Project {
             if !t.gain_db.is_finite() || !(-1.0..=1.0).contains(&t.pan) {
                 return Err(format!("track {} has an invalid gain or pan", t.id));
             }
+        }
+        let mut clip_ids = std::collections::HashSet::new();
+        for c in &self.clips {
+            if !clip_ids.insert(c.id) || c.id >= self.next_clip_id {
+                return Err(format!("clip id {} is used twice or not below next_clip_id", c.id));
+            }
+            self.check_clip(c)?;
         }
         Ok(())
     }
@@ -270,6 +384,30 @@ mod tests {
         assert_eq!(load(&dir).unwrap(), p);
         assert_eq!(load(&dir.join(PROJECT_FILE)).unwrap(), p);
         save(&p, &dir).unwrap(); // overwrite in place
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clips_round_trip_and_format_1_still_opens() {
+        let dir = temp("clips");
+        let mut p = Project::default();
+        let t = p.add_track("Keys".into(), TrackKind::Instrument);
+        let notes = vec![Note { pitch: 60, start: 0, length: PPQ, velocity: 100 }];
+        let clip = Clip { id: 0, track: t, name: "A".into(), start: 4 * PPQ, length: 8 * PPQ, offset: 0, gain_db: 0.0, content: Content::Midi { notes } };
+        p.check_clip(&clip).unwrap();
+        p.add_clip(clip);
+        save(&p, &dir).unwrap();
+        assert_eq!(load(&dir).unwrap(), p);
+
+        // An audio clip may not go on an instrument track.
+        let audio = Content::Audio { source: "x.wav".into(), source_length: 10 };
+        let bad = Clip { id: 9, track: t, name: "x".into(), start: 0, length: 10, offset: 0, gain_db: 0.0, content: audio };
+        assert!(p.check_clip(&bad).unwrap_err().contains("audio clip"));
+
+        let old = r#"{"format":1,"name":"Old","sample_rate":48000,"tempo_bpm":120.0,"time_signature":[4,4],"master_gain_db":0.0,"tracks":[],"next_track_id":1}"#;
+        std::fs::write(dir.join(PROJECT_FILE), old).unwrap();
+        let p1 = load(&dir).unwrap();
+        assert!(p1.clips.is_empty() && p1.next_clip_id == 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

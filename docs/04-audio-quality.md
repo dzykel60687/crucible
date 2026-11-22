@@ -117,6 +117,13 @@ Proposed, see decision D-014.
 The export dialog shows, before the user confirms: the format, whether any sample-rate
 conversion will happen, whether dither will be applied, and the measured true peak.
 
+## Note on export determinism (2026-11-21)
+
+"Render twice, get the same hash" holds only for projects without third-party plugins. Some
+synths randomise per render, and plugins may behave differently in offline mode
+(`12-known-daw-problems.md` R4, R5). Keep the test for Crucible's own code; for projects with
+plugins, compare renders by ear and by level, not by hash.
+
 ## Platform notes
 
 - All rules and tests in this document are platform-neutral.

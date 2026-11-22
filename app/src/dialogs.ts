@@ -3,8 +3,9 @@
 import { demo, devices, plugins } from './demo'
 import { q, type Track } from './engine'
 import { icon } from './icons'
-import { changed, esc, run, state, toast } from './store'
+import { changed, esc, run, selectClips, state, toast } from './store'
 import { refreshPalette } from './timeline'
+import { applyLayout, currentLayout, LAYOUTS } from './layout'
 
 const layer = document.getElementById('layer')!
 export const closeLayer = () => layer.replaceChildren()
@@ -68,10 +69,20 @@ export function pathPrompt(mode: 'open' | 'save' | 'new') {
     if (!v) return
     const cmd = mode === 'new' ? `project.new ${q(v)}` : mode === 'open' ? `project.open ${q(v)}${discard?.classList.contains('on') ? ' --discard' : ''}` : `project.save ${q(v)}`
     const r = await run(cmd)
-    if (r.every((x) => x.ok)) { closeLayer(); if (mode !== 'save') { demo.clips = []; demo.seeded.clear() } toast('info', r.at(-1)?.text?.split('\n')[0] ?? 'Done') }
+    if (r.every((x) => x.ok)) { closeLayer(); if (mode !== 'save') selectClips([]); toast('info', r.at(-1)?.text?.split('\n')[0] ?? 'Done') }
   }
   d.querySelector<HTMLButtonElement>('[data-go]')!.onclick = go
   input.onkeydown = (e) => { if (e.key === 'Enter') go(); e.stopPropagation() }
+}
+
+/** One text field, OK and Cancel. Calls done with the trimmed value if it changed. */
+export function textPrompt(title: string, value: string, done: (v: string) => void) {
+  const d = dialog(title, `<div class="content"><input class="input" value="${esc(value)}" spellcheck="false"></div>`, { footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" data-go>OK</button>' })
+  const input = d.querySelector('input')!
+  input.focus(); input.select()
+  const go = () => { const v = input.value.trim(); closeLayer(); if (v && v !== value) done(v) }
+  d.querySelector<HTMLButtonElement>('[data-go]')!.onclick = go
+  input.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') go(); if (e.key === 'Escape') closeLayer() }
 }
 
 // ------------------------------------------------------------------ plugin picker
@@ -97,7 +108,7 @@ export function openPluginPicker(t: Track, kind: 'Instrument' | 'Effect') {
 export function openExport() {
   const p = state.project
   const d = dialog('Export', `<div class="content">
-      <div class="row"><span>Format</span><div class="seg" data-g="fmt"><button class="on">WAV</button><button>FLAC</button><button>AIFF</button><button>MP3</button></div></div>
+      <div class="row"><span>Format</span><div class="seg" data-g="fmt"><button class="on">WAV</button><button>FLAC</button><button>AIFF</button></div></div>
       <div class="row"><span>Bit depth</span><div class="seg" data-g="bits"><button>16-bit</button><button class="on">24-bit</button><button>32-bit float</button></div></div>
       <div class="row"><span>Sample rate</span><select class="input"><option>${p.sample_rate} Hz (project rate, no resampling)</option>${[44100, 48000, 96000].filter((r) => r !== p.sample_rate).map((r) => `<option>${r} Hz (resampled)</option>`).join('')}</select></div>
       <div class="row"><span>Range</span><div class="seg"><button class="on">Whole song</button><button>Loop</button><button>Selection</button></div></div>
@@ -116,22 +127,28 @@ export function openExport() {
 
 // ------------------------------------------------------------------ settings: one page
 const SECTIONS = ['Audio', 'MIDI', 'Plugins', 'Project', 'Appearance', 'Keyboard', 'Diagnostics']
-const ACCENTS = ['#ff7a2f', '#5aa2ff', '#3fd18b', '#c084fc', '#f5c542', '#ff5c8a']
-const prefs = { driver: 0, output: 0, input: 0, buffer: 2, exclusive: true, accent: '#ff7a2f', reduceMotion: false }
+/** Sections whose controls really work. The others show planned settings with demo values. */
+const LIVE = new Set(['Project', 'Appearance', 'Keyboard'])
+const ACCENTS = ['#45c08f', '#5aa2ff', '#2dd4bf', '#a78bfa', '#e6b450', '#f47c96']
+const prefs = { driver: 0, output: 0, input: 0, buffer: 2, exclusive: true, accent: '#45c08f', reduceMotion: false }
 
 export const SHORTCUTS: [string, string][] = [
   ['Play / stop', 'Space'], ['Record', 'R'], ['Return to start', 'Home'], ['Loop on/off', 'L'], ['Metronome', 'K'],
-  ['Undo', 'Ctrl+Z'], ['Redo', 'Ctrl+Shift+Z'], ['Save', 'Ctrl+S'], ['Export', 'Ctrl+E'], ['Settings', 'Ctrl+,'],
-  ['Add track', 'Ctrl+T'], ['Rename track', 'F2'], ['Mute / solo track', 'M / S'], ['Remove track', 'Del'],
-  ['Select track above / below', '↑ / ↓'], ['Zoom in / out', '+ / −'], ['Mixer / piano roll / clip / console', '1 / 2 / 3 / `'], ['Show / hide panel', 'B'],
+  ['Undo', 'Ctrl+Z'], ['Redo', 'Ctrl+Shift+Z'], ['Save', 'Ctrl+S'], ['Export', 'Ctrl+Shift+E'], ['Settings', 'Ctrl+,'],
+  ['Copy / cut / paste clips', 'Ctrl+C / X / V'], ['Duplicate clips', 'Ctrl+D'], ['Split at playhead', 'Ctrl+E'],
+  ['Delete clips (or note)', 'Del'], ['Select all clips', 'Ctrl+A'], ['Nudge clips by grid / bar', '← → / Shift'],
+  ['Move clips: drag · copy: Ctrl+drag', 'mouse'], ['Trim: drag a clip edge · no snap: Alt', 'mouse'],
+  ['Add track', 'Ctrl+T'], ['Rename track', 'F2'], ['Mute / solo track', 'M / S'], ['Remove track', 'Ctrl+Del'],
+  ['Select track above / below', '↑ / ↓'], ['Zoom in / out', '+ / − or Ctrl+wheel'], ['Mixer / piano roll / clip / console', '1 / 2 / 3 / `'],
+  ['Show / hide panel', 'B'], ['Next layout', 'Ctrl+Shift+L'],
 ]
 
 export function openSettings(section = 'Audio') {
-  const d = dialog('Settings', `<div class="settings"><nav>${SECTIONS.map((s) => `<button data-s="${s}">${s}</button>`).join('')}</nav><div class="pane"></div></div>`, { wide: true, tag: DEMO })
+  const d = dialog('Settings', `<div class="settings"><nav>${SECTIONS.map((s) => `<button data-s="${s}">${s}</button>`).join('')}</nav><div class="pane"></div></div>`, { wide: true })
   const pane = d.querySelector<HTMLElement>('.pane')!
   const show = (s: string) => {
     d.querySelectorAll<HTMLButtonElement>('nav button').forEach((b) => b.classList.toggle('on', b.dataset.s === s))
-    pane.innerHTML = sectionHtml(s)
+    pane.innerHTML = (LIVE.has(s) ? '' : '<div><span class="tag demo">demo values: not wired to devices yet</span></div>') + sectionHtml(s)
     pane.scrollTop = 0
     wire(s, pane)
   }
@@ -171,7 +188,10 @@ function sectionHtml(s: string): string {
       <div class="row"><span>Folder</span><span style="color:var(--text-dim);user-select:text">${esc(state.folder ?? 'Not saved yet')}</span></div>
       <div class="row"><span>Crash journal</span><span style="color:var(--text-dim)">${state.journal ? 'On. Edits since the last save survive a crash.' : 'Starts after the first save.'}</span></div>
       <div class="row"><span></span><div class="sub" style="color:var(--ok)">These settings are live: each change runs an engine command.</div></div>`
-    case 'Appearance': return `<h3>Look</h3>
+    case 'Appearance': return `<h3>Layout</h3>
+      <div class="layout-cards">${LAYOUTS.map((l) => `<button data-layout="${l.id}" class="${l.id === currentLayout() ? 'on' : ''}">${l.sketch}<b>${esc(l.name)}</b><small>${esc(l.note)}</small></button>`).join('')}</div>
+      <div class="row"><span></span><div class="sub">Remembered on this computer. Ctrl+Shift+L switches to the next one.</div></div>
+      <h3>Look</h3>
       <div class="row"><span>Theme</span><div class="seg"><button class="on">Dark</button><button disabled title="Later, through the same design tokens">Light</button></div></div>
       <div class="row"><span>Accent</span><div class="swatches">${ACCENTS.map((c) => `<button style="--c:${c}" class="${c === prefs.accent ? 'on' : ''}" data-accent="${c}"></button>`).join('')}</div></div>
       <div class="row"><span>Reduce motion</span><span><button class="switch ${prefs.reduceMotion ? 'on' : ''}" data-x="reduceMotion"></button></span></div>
@@ -196,10 +216,12 @@ function wire(s: string, pane: HTMLElement) {
     if (k === 'reduceMotion') document.documentElement.style.setProperty('--t', prefs.reduceMotion ? '0ms' : '120ms')
   }))
   pane.querySelectorAll<HTMLButtonElement>('[data-midi]').forEach((b) => (b.onclick = () => { const m = devices.midi[+b.dataset.midi!]; m.on = !m.on; b.classList.toggle('on', m.on) }))
+  pane.querySelectorAll<HTMLButtonElement>('[data-layout]').forEach((b) => (b.onclick = () => { applyLayout(b.dataset.layout!); refresh(s, pane) }))
   pane.querySelectorAll<HTMLButtonElement>('[data-accent]').forEach((b) => (b.onclick = () => {
     prefs.accent = b.dataset.accent!
     document.documentElement.style.setProperty('--accent', prefs.accent)
-    document.documentElement.style.setProperty('--accent-soft', prefs.accent + '26')
+    document.documentElement.style.setProperty('--accent-soft', prefs.accent + '1f')
+    document.documentElement.style.setProperty('--accent-hover', prefs.accent)
     refreshPalette(); refresh(s, pane)
   }))
   pane.querySelectorAll<HTMLButtonElement>('[data-act]').forEach((b) => (b.onclick = () => toast('info', `Run crucible ${b.dataset.act}`, 'Machine commands are in crucible.exe today. They join the window when the device layer moves into the engine.')))
@@ -215,4 +237,4 @@ function wire(s: string, pane: HTMLElement) {
   })
 }
 
-function refresh(s: string, pane: HTMLElement) { pane.innerHTML = sectionHtml(s); wire(s, pane) }
+function refresh(s: string, pane: HTMLElement) { pane.innerHTML = (LIVE.has(s) ? '' : '<div><span class="tag demo">demo values: not wired to devices yet</span></div>') + sectionHtml(s); wire(s, pane) }

@@ -47,13 +47,13 @@ points back here.
 | Per-user VST3 folder | `%LOCALAPPDATA%\Programs\Common\VST3` | `~/Library/Audio/Plug-Ins/VST3` | `~/.vst3` | `crucible-plugin-host::plugin_paths` |
 | Editor window event pump | Win32 `PeekMessage` loop on the main thread. vst3-host does not do it | AppKit run loop | X11 polling, done inside vst3-host | `spikes/m0-omnisphere/src/pump.rs` today. Tauri's event loop in the real app |
 | Static C runtime | `.cargo/config.toml` links the MSVC runtime statically so test builds copy to any PC | Not applicable | Not applicable | `.cargo/config.toml` |
-| WASAPI exclusive mode | Implemented with the `wasapi` crate: capability probe, timing test, output stream. Thread not yet in the MMCSS "Pro Audio" class | Not applicable: CoreAudio is already exclusive-grade | ALSA `hw:` devices, or JACK / PipeWire with a small quantum | `crucible-audio-io/src/wasapi_exclusive.rs`, behind `open_exclusive_output` |
+| WASAPI exclusive mode | Implemented with the `wasapi` crate: capability probe, timing test, output stream. Audio thread joins the MMCSS "Pro Audio" class (avrt.dll); `CRUCIBLE_NO_MMCSS=1` skips it | Not applicable: CoreAudio is already exclusive-grade | ALSA `hw:` devices, or JACK / PipeWire with a small quantum | `crucible-audio-io/src/wasapi_exclusive.rs`, behind `open_exclusive_output` |
 | Diagnostic log folder | `%LOCALAPPDATA%\Crucible\logs` | `~/Library/Application Support/Crucible/logs` | `~/.local/share/Crucible/logs` | `crucible-diagnostics::log_dir`, resolved by the `dirs` crate. No per-OS code |
 | Crash capture | `SetUnhandledExceptionFilter` names the crashing module; `MiniDumpWriteDump` (dbghelp.dll, part of Windows) writes a `.dmp` | Not done. Needs a signal handler (SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT) and `dladdr` | Not done. Same as macOS | `crucible-diagnostics/src/platform_windows.rs`; stub in `platform_other.rs`. Details in `11-error-codes.md` |
 | Exit-status decoding | NTSTATUS codes such as `0xC0000005` named in plain English | Signals named instead | Signals named instead | `crucible-diagnostics::describe_exit` |
 | Audio error decoding | WASAPI HRESULTs mapped to E2xxx codes | CoreAudio `OSStatus` will map to the same codes | ALSA/PipeWire errors will map to the same codes | `crucible-audio-io/src/wasapi_exclusive.rs`, `explain()` |
 | Machine facts in log headers | `sysinfo` crate | `sysinfo` crate | `sysinfo` crate | `crucible-diagnostics/src/system.rs`. Portable |
-| UI typeface | Segoe UI Variable through the system font stack, until a bundled font is approved | San Francisco through `-apple-system` | Whatever `system-ui` gives; uneven, one reason to bundle | `app/src/style.css` tokens |
+| UI typeface | Bundled Inter and JetBrains Mono (D-026), identical everywhere | Same files | Same files | `app/src/fonts`, `@font-face` in `app/src/style.css` |
 | Canvas drawing | Chromium Canvas 2D. `roundRect` used; WebKit has it since Safari 16 | WebKit Canvas 2D | WebKitGTK Canvas 2D; check `roundRect` and performance first | `app/src/timeline.ts`, `panels.ts` |
 
 ## Known future costs, recorded so they are not a surprise

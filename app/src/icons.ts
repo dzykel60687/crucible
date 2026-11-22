@@ -3,7 +3,8 @@ const s = (body: string, fill = false) =>
   `<svg viewBox="0 0 24 24" fill="${fill ? 'currentColor' : 'none'}" stroke="${fill ? 'none' : 'currentColor'}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`
 
 export const icon = {
-  logo: `<svg viewBox="0 0 32 32"><path d="M6.5 9h19l-2.4 14.6A4 4 0 0 1 19.2 27h-6.4a4 4 0 0 1-3.9-3.4z" fill="currentColor"/><path d="M4 8h22.5l2.5-1.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><ellipse cx="16" cy="11.6" rx="8" ry="1.5" fill="#ffd68c"/></svg>`,
+  // The mark: a crucible with a sound wave cut through it. Same shapes as the app icon (app/icon.py).
+  logo: `<svg viewBox="0 0 32 32"><path d="M4.5 8.2h21.3l2.2-1.6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M6.6 10.6h18.8l-2.3 13a3.8 3.8 0 0 1-3.7 3.2h-6.8a3.8 3.8 0 0 1-3.7-3.2z" fill="currentColor"/><path d="M9.2 18.2c1.1 0 1.3-3.6 2.4-3.6s1.3 7.2 2.4 7.2 1.3-9 2.4-9 1.3 9 2.4 9 1.3-7.2 2.4-7.2 1.3 3.6 2.4 3.6" style="stroke:var(--surface)" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   start: s('<path d="M6 5v14"/><path d="M18 6 9 12l9 6z" fill="currentColor"/>'),
   play: s('<path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/>', true),
   stop: s('<rect x="5.5" y="5.5" width="13" height="13" rx="2"/>', true),

@@ -55,7 +55,7 @@ marker shows what was happening then.
 | 2 | Driver timing, silent | `.\crucible.exe audio.test --seconds 30` | Verdict PASS. Note the buffer size in ms. If it fails, try step 2 again with `--device` and part of the interface's name. |
 | 3 | Load and open, low latency | `.\m0-play.exe play omnisphere --exclusive` | Within a minute: "loaded", "audio started", "exclusive output: ... buffer ... ms", "MIDI input connected", "editor window opened". The Omnisphere window appears. |
 | 4 | Sound without keyboard | Type `c` then Enter | A chord plays for 1.5 seconds. |
-| 5 | Sound from keyboard | Play the keyboard | Notes sound. Sustain pedal works. Pitch bend works. |
+| 5 | Sound from keyboard | Play the keyboard. Use the sustain pedal, the mod wheel and pitch bend. Then hold a chord and type `q` Enter while holding it | Notes sound. Sustain, mod wheel and pitch bend all act on the sound (VST3 receives these as parameters, not MIDI, so they can fail separately from notes). Nothing keeps ringing after quitting. |
 | 6 | Feel | Play fast passages | Does it feel immediate? Note the buffer ms from step 3. |
 | 7 | Editor works | Use the patch browser, including typing in its search box | Typing goes into Omnisphere. Patches load. |
 | 8 | Patch switching | Switch patches while holding notes, then type `t` | Note any dropouts or clicks. `t` prints dropouts counted so far. |
@@ -66,6 +66,7 @@ marker shows what was happening then.
 | 13 | Listen to render | Play the WAV | A C-major chord with your saved patch, released near the end. No clicks or garbage. |
 | 14 | Shared mode, for comparison | `.\m0-play.exe play omnisphere` (no `--exclusive`) | Plays, with noticeably more delay. Confirms both paths work. |
 | 15 | Keyscape | Repeat steps 3 to 13 with `keyscape` instead of `omnisphere` | Same results. |
+| 2b | Thread priority, optional | Open a heavy program (a browser with video), run step 2, then run `$env:CRUCIBLE_NO_MMCSS=1` and step 2 again, then `Remove-Item Env:CRUCIBLE_NO_MMCSS` | The first log says "MMCSS Pro Audio". Compare late wake-ups and worst gap between the two runs. |
 | 16 | Other machines | Repeat steps 1, 2, 3, 4, 5 and 12 on the Behringer machine and the laptop | Loads and plays on both. On the laptop, plug in the Behringer for listening. |
 
 ## If the name matches more than one plugin

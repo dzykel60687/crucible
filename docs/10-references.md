@@ -99,6 +99,13 @@ Community numbers as measured on 2026-11-19:
   Reusable parts: `src/dsp` (EQ, dynamics, reverb, delay), `src/loudness.rs`, `src/render.rs`.
   Its README has a "What it does to quality" section in the same spirit as `04-audio-quality.md`.
 
+## Bundled fonts (D-026)
+
+- Inter, SIL Open Font License 1.1, https://github.com/rsms/inter (files taken from the
+  `@fontsource-variable/inter` 5.3.0 npm package, Latin and Latin Extended subsets).
+- JetBrains Mono, SIL Open Font License 1.1, https://github.com/JetBrains/JetBrainsMono
+  (from `@fontsource-variable/jetbrains-mono` 5.3.0, same subsets).
+
 ## Platform notes
 
 Most sources above describe Windows or macOS behaviour. The Linux-specific ones are the Tauri

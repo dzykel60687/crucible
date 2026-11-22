@@ -1,12 +1,15 @@
 // Crucible's window: top bar, track headers, timeline, bottom panel. Views draw from `state`
 // (the engine's truth) and change it only through `run(command)`.
-import { closeLayer, layerOpen, menu, openExport, openPluginPicker, openSettings, pathPrompt, type Item } from './dialogs'
-import { demo, seedClips, settling, tick } from './demo'
-import { q, transportName } from './engine'
+import { closeLayer, layerOpen, menu, openExport, openPluginPicker, openSettings, pathPrompt, textPrompt, type Item } from './dialogs'
+import { demo, seedPlugins, settling, tick } from './demo'
+import { beats, ids, PPQ, q, transportName, type Clip } from './engine'
 import { icon } from './icons'
-import { drawMeters, renderPanel, renderTabs, selectTab, setCommandNames } from './panels'
-import { bpb, changed, dragNumber, esc, fmtDb, fmtPan, onChange, redraw, run, state, toast, track, ui, view } from './store'
-import { clampScroll, draw, follow, ROW_H, setOnOpenClip, trackColor, zoom } from './timeline'
+import { cycleLayout, loadLayout } from './layout'
+import { deleteSelectedNote, drawMeters, renderPanel, renderTabs, selectTab, setCommandNames } from './panels'
+import { bpb, changed, clip, created, dragNumber, esc, fmtDb, fmtPan, onChange, redraw, run, selectClips, state, toast, track, ui, view } from './store'
+import { clampScroll, draw, follow, hooks, pasteTarget, rowH, trackColor, zoom } from './timeline'
+
+loadLayout()
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector<T>(sel)!
 
@@ -87,12 +90,13 @@ function projectMenu(at: { x: number; y: number }) {
     'sep',
     { label: 'Save', kbd: 'Ctrl+S', action: save, disabled: !state.dirty && !!state.folder },
     { label: 'Save as…', kbd: 'Ctrl+Shift+S', action: () => pathPrompt('save') },
-    { label: 'Export…', kbd: 'Ctrl+E', action: openExport },
+    { label: 'Export…', kbd: 'Ctrl+Shift+E', action: openExport },
     'sep',
     { label: 'Undo', small: state.undo ?? 'nothing', action: () => run('undo'), disabled: !state.undo },
     { label: 'Redo', small: state.redo ?? 'nothing', action: () => run('redo'), disabled: !state.redo },
     { label: 'History', action: () => { run('history'); selectTab('console') } },
     'sep',
+    { label: 'Layout…', kbd: 'Ctrl+Shift+L', action: () => openSettings('Appearance') },
     { label: 'Settings…', kbd: 'Ctrl+,', action: () => openSettings() },
   ]
   menu(at, items)
@@ -145,11 +149,18 @@ function inlineEdit(target: HTMLElement, value: string, done: (v: string) => voi
 
 // ------------------------------------------------------------------ track headers
 const rows = $('#header-rows')
-$('#headers').insertAdjacentHTML('afterbegin', `<div class="ruler-label"><span>Tracks</span><span id="track-count"></span></div>`)
+$('#headers').insertAdjacentHTML('afterbegin', `<div class="ruler-label"><span>Tracks <span id="track-count"></span></span><button class="snap-btn" id="snap" title="Grid for moving and trimming clips. Hold Alt while dragging to ignore it."></button></div>`)
+const SNAPS: [string, number][] = [['Bar', -1], ['Beat', 1], ['1/8', 0.5], ['1/16', 0.25], ['Off', 0]]
+const snapLabel = () => (ui.snap === bpb() ? 'Bar' : SNAPS.find(([, v]) => v === ui.snap)?.[0] ?? `${ui.snap}`)
+$('#snap').onclick = (e) => {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  menu({ x: r.left, y: r.bottom + 4 }, SNAPS.map(([label, v]) => ({ label: `Snap: ${label}`, action: () => { ui.snap = v < 0 ? bpb() : v; changed() } })))
+}
 
 function renderHeaders() {
   const tracks = state.project.tracks
   $('#track-count').textContent = String(tracks.length)
+  $('#snap').textContent = `Snap ${snapLabel()}`
   rows.innerHTML = tracks.map((t) => `
     <div class="track ${t.id === ui.selTrack ? 'sel' : ''}" data-id="${t.id}" style="--c:${trackColor(t.id)}">
       <div class="color"></div>
@@ -191,7 +202,7 @@ function trackMenu(t: { id: number; name: string }, at: { x: number; y: number }
     { label: 'Move up', action: () => run(`track.move #${t.id} ${i}`), disabled: i === 0 },
     { label: 'Move down', action: () => run(`track.move #${t.id} ${i + 2}`), disabled: i === n - 1 },
     'sep',
-    { label: 'Remove track', kbd: 'Del', danger: true, action: () => run(`track.remove #${t.id}`) },
+    { label: 'Remove track', kbd: 'Ctrl+Del', danger: true, action: () => run(`track.remove #${t.id}`) },
   ])
 }
 
@@ -214,20 +225,91 @@ async function addTrack(kind: 'audio' | 'instrument') {
 function ensureVisible(id: number) {
   const i = state.project.tracks.findIndex((t) => t.id === id)
   const viewH = $('#timeline-wrap').clientHeight - 30
-  if (i * ROW_H < ui.scrollY) ui.scrollY = i * ROW_H
-  else if ((i + 1) * ROW_H > ui.scrollY + viewH) ui.scrollY = (i + 1) * ROW_H - viewH
+  const h = rowH()
+  if (i * h < ui.scrollY) ui.scrollY = i * h
+  else if ((i + 1) * h > ui.scrollY + viewH) ui.scrollY = (i + 1) * h - viewH
   clampScroll()
 }
 
 $('#headers').addEventListener('wheel', (e) => { e.preventDefault(); ui.scrollY += e.deltaY; clampScroll(); redraw() }, { passive: false })
 view.redraw = () => { rows.style.transform = `translateY(${-ui.scrollY}px)`; draw(); updateReadouts() }
 
-setOnOpenClip((c) => { ui.selClip = c.id; ui.selTrack = c.track; selectTab(c.kind === 'midi' ? 'piano' : 'clip') })
+// ------------------------------------------------------------------ clip editing (all real engine commands)
+const selIds = () => [...ui.selClips].filter((i) => clip(i))
+async function runSelecting(line: string) {
+  const r = await run(line)
+  const made = created(r)
+  if (made.length) { selectClips(made); changed() }
+}
+function copyClips() { const s = selIds(); if (s.length) run(`edit.copy ${ids(s)}`) }
+function cutClips() { const s = selIds(); if (s.length) { run(`edit.cut ${ids(s)}`); selectClips([]) } }
+function pasteClips(trackId?: number | null, at?: number) {
+  const t = pasteTarget()
+  const tr = trackId ?? t.track
+  if (tr == null) return toast('info', 'Add a track first')
+  runSelecting(`edit.paste #${tr} ${at ?? t.at}`)
+}
+function duplicateClips() { const s = selIds(); if (s.length) runSelecting(`clip.copy ${ids(s)}`) }
+function deleteClips() { const s = selIds(); if (s.length) { run(`clip.remove ${ids(s)}`); selectClips([]) } }
+function splitClips() {
+  const at = Math.round(demo.pos * PPQ)
+  let s = selIds()
+  if (!s.length) s = state.project.clips.filter((c) => c.track === ui.selTrack && c.start < at && c.start + c.length > at).map((c) => c.id)
+  if (!s.length) return toast('info', 'Nothing to split', 'Put the playhead over a clip, select it, then Ctrl+E.')
+  runSelecting(`clip.split ${ids(s)} ${beats(at)}`)
+}
+function nudge(dir: number, bar: boolean) {
+  const s = selIds()
+  if (!s.length) return false
+  const step = bar ? bpb() : ui.snap || 0.25
+  const first = Math.min(...s.map((i) => clip(i)!.start)) / PPQ
+  const by = Math.max(dir * step, -first)
+  if (by) run(`clip.move ${ids(s)} --by ${+by.toFixed(6)}`)
+  return true
+}
+function renameClip(c: Clip) {
+  textPrompt('Rename clip', c.name, (name) => run(`clip.rename #${c.id} ${q(name)}`))
+}
+
+hooks.openClip = (c) => { selectClips([c.id]); selectTab(c.content.kind === 'midi' ? 'piano' : 'clip') }
+hooks.clipMenu = (c, at) => {
+  const n = ui.selClips.size
+  const many = n > 1 ? ` ${n} clips` : ''
+  menu(at, [
+    { label: `Cut${many}`, kbd: 'Ctrl+X', action: cutClips },
+    { label: `Copy${many}`, kbd: 'Ctrl+C', action: copyClips },
+    { label: 'Paste at playhead', kbd: 'Ctrl+V', action: () => pasteClips() },
+    { label: `Duplicate${many}`, kbd: 'Ctrl+D', action: duplicateClips },
+    { label: 'Split at playhead', kbd: 'Ctrl+E', action: splitClips },
+    'sep',
+    { label: 'Open in editor', action: () => hooks.openClip(c) },
+    { label: 'Rename…', action: () => renameClip(c), disabled: n > 1 },
+    ...(c.content.kind === 'midi' ? [{ label: 'Quantize to 1/16', action: () => run(`clip.quantize #${c.id}`) }] : []),
+    'sep',
+    { label: `Delete${many}`, kbd: 'Del', danger: true, action: deleteClips },
+  ])
+}
+hooks.emptyMenu = (trackId, at, pos) => {
+  const t = track(trackId)
+  menu(pos, [
+    { label: 'Paste here', kbd: 'Ctrl+V', action: () => pasteClips(trackId, at) },
+    ...(t?.kind === 'instrument' ? [{ label: 'New MIDI clip here', action: () => runSelecting(`clip.add #${t.id} ${Math.floor(at / bpb()) * bpb()} ${bpb()}`) }] : []),
+    { label: 'Select all clips', kbd: 'Ctrl+A', action: () => { selectClips(state.project.clips.map((c) => c.id)); changed() } },
+  ])
+}
 
 // ------------------------------------------------------------------ panel resize
 const panelEl = $('#panel')
 panelEl.insertAdjacentHTML('afterbegin', '<div class="resize-h" title="Drag to resize"></div>')
 $('.resize-h', panelEl).addEventListener('pointerdown', (e) => {
+  if (document.documentElement.dataset.layout === 'side') {
+    const w0 = panelEl.clientWidth, x0 = e.clientX
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+    const mv = (m: PointerEvent) => document.documentElement.style.setProperty('--side-w', `${Math.max(320, Math.min(innerWidth - 480, w0 + x0 - m.clientX))}px`)
+    const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); changed() }
+    addEventListener('pointermove', mv); addEventListener('pointerup', up)
+    return
+  }
   const h0 = $('#panel-body').clientHeight, y0 = e.clientY
   ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
   const mv = (m: PointerEvent) => document.documentElement.style.setProperty('--panel-h', `${Math.max(160, Math.min(innerHeight - 260, h0 + y0 - m.clientY))}px`)
@@ -257,7 +339,7 @@ function frame(now: number) {
   const t0 = performance.now()
   const dt = Math.min(0.1, (now - last) / 1000)
   last = now
-  tick(dt, state.project.tempo_bpm, state.project.tracks, state.project.master_gain_db)
+  tick(dt, state.project.tempo_bpm, state.project.tracks, state.project.clips, state.project.master_gain_db)
   if (demo.playing) follow()
   draw(); drawMeters(); updateReadouts()
   const ms = performance.now() - t0
@@ -268,11 +350,11 @@ function frame(now: number) {
 if (import.meta.env.DEV) Object.assign(window, { __crucible: { perf, draw, drawMeters, state: () => state, ui, demo } })
 
 // ------------------------------------------------------------------ render on change
-let firstSeed = false
 onChange(() => {
-  seedClips(state.project.tracks, firstSeed)
+  seedPlugins(state.project.tracks)
   if (ui.selTrack !== null && !track(ui.selTrack)) ui.selTrack = null
-  if (ui.selClip !== null && !demo.clips.some((c) => c.id === ui.selClip && track(c.track))) ui.selClip = null
+  if ([...ui.selClips].some((i) => !clip(i))) selectClips([...ui.selClips].filter((i) => clip(i)))
+  if (ui.selClip !== null && !clip(ui.selClip)) ui.selClip = null
   clampScroll()
   rows.style.transform = `translateY(${-ui.scrollY}px)`
   updateTop()
@@ -298,7 +380,15 @@ addEventListener('keydown', (e) => {
     else if (k === 's') { handled(); save() }
     else if (k === 'o') { handled(); pathPrompt('open') }
     else if (k === 'n') { handled(); pathPrompt('new') }
-    else if (k === 'e') { handled(); openExport() }
+    else if (k === 'e' && e.shiftKey) { handled(); openExport() }
+    else if (k === 'e') { handled(); splitClips() }
+    else if (k === 'c') { handled(); copyClips() }
+    else if (k === 'x') { handled(); cutClips() }
+    else if (k === 'v') { handled(); pasteClips() }
+    else if (k === 'd') { handled(); duplicateClips() }
+    else if (k === 'a') { handled(); selectClips(state.project.clips.map((c) => c.id)); changed() }
+    else if (k === 'l' && e.shiftKey) { handled(); toast('info', `Layout: ${cycleLayout().name}`) }
+    else if ((k === 'delete' || k === 'backspace') && sel) { handled(); run(`track.remove #${sel}`) }
     else if (k === ',') { handled(); openSettings() }
     else if (k === 't') { handled(); addTrack(e.shiftKey ? 'audio' : 'instrument') }
     return
@@ -311,7 +401,14 @@ addEventListener('keydown', (e) => {
     case 'k': case 'K': el.metro.click(); break
     case 'm': case 'M': if (sel) run(`track.mute #${sel}`); break
     case 's': case 'S': if (sel) run(`track.solo #${sel}`); break
-    case 'Delete': case 'Backspace': if (sel) run(`track.remove #${sel}`); break
+    case 'Delete': case 'Backspace':
+      handled()
+      if (ui.focus === 'piano' && deleteSelectedNote()) break
+      if (ui.selClips.size) deleteClips()
+      else if (sel) toast('info', 'Ctrl+Delete removes the track', 'Delete on its own removes selected clips.')
+      break
+    case 'Escape': if (ui.selClips.size) { selectClips([]); changed() } break
+    case 'ArrowLeft': case 'ArrowRight': if (nudge(e.key === 'ArrowLeft' ? -1 : 1, e.shiftKey)) handled(); break
     case 'F2': if (sel) { handled(); rename(track(sel)!) } break
     case 'ArrowUp': case 'ArrowDown': {
       handled()
@@ -334,19 +431,13 @@ addEventListener('keydown', (e) => {
 // ------------------------------------------------------------------ start
 async function start() {
   ui.log.push({ kind: 'help', text: `Crucible console. Connected to the engine through the ${transportName}. Type help.` })
-  // Tracks present at start get demo clips by name (Drums, Bass, Keys, Pad, Vox); tracks added
-  // later stay empty.
-  firstSeed = true
   await run('project.state', { quiet: true })
-  if (!state.project.tracks.length) {
-    // Empty engine: build a demo song through real engine commands so the layout has content.
-    await run('project.new "Demo song"; project.tempo 96; track.add Drums --kind audio; track.add Bass --kind instrument; track.add Keys --kind instrument; track.add Pad --kind instrument; track.add Vox --kind audio; track.gain Pad -4.5; track.pan Keys -20; track.gain Vox -2', { quiet: true })
-  }
-  changed()
-  await new Promise((r) => requestAnimationFrame(r))
-  firstSeed = false
+  // An empty engine gets the demo song, built by the engine itself in one undoable step.
+  if (!state.project.tracks.length) await run('project.demo', { quiet: true })
   ui.selTrack = state.project.tracks[2]?.id ?? null
-  ui.selClip = demo.clips.find((c) => c.track === ui.selTrack)?.id ?? null
+  const first = state.project.clips.find((c) => c.track === ui.selTrack)
+  if (first) selectClips([first.id])
+  document.fonts?.ready.then(() => changed()) // canvases redraw once the bundled fonts are in
   const help = await run('help', { quiet: true })
   setCommandNames([...(help[0]?.text ?? '').matchAll(/^\s{2}([a-z][\w.]*)/gm)].map((m) => m[1]))
   changed()

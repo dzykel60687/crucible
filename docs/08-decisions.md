@@ -235,6 +235,13 @@ Implementation choices:
 - Track names may repeat; a name that matches more than one track is refused (E5004) and the
   position or id is used instead.
 
+*Evidence added 2026-11-21, for Dzyan (`12-known-daw-problems.md` P7):* "a plugin's own editor
+window" being outside the command set means 30 minutes of tweaking inside Omnisphere is outside
+undo, the journal and crash recovery. Proposed fix for M3, not built: the plugin's "state changed"
+notifications mark the project dirty, autosave captures plugin state on a timer, and one coarse
+`plugin.state` journal entry is written per editor gesture or when the editor closes. The decision
+itself stands.
+
 ## D-023. The product is called Crucible. *Decided by Dzyan 2026-11-20.*
 
 User-facing text, the `crucible` command-line binary and the per-user folder
@@ -279,6 +286,59 @@ animations", to evaluate the look. Built as `app/` (`crucible-app.exe`), ahead o
   processes. This is the baseline cost of a web view, not of Crucible's code. To decide at M1: count
   the web view separately in the budget, trim it (WebView2 flags, single renderer), or take it as a
   reason for the egui fallback (D-006).
+
+## D-026. Bundled typefaces: Inter and JetBrains Mono. *Decided by Dzyan 2026-11-21.*
+
+"yes bundle interface types." Inter for the interface, JetBrains Mono for numbers in the console
+and readouts. Both SIL Open Font License 1.1, which allows bundling in any app; licences sit beside
+the files in `app/src/fonts`. Only the Latin and Latin Extended subsets are bundled (189 KB in
+all); other scripts fall back to the system font. Vendored as files, not as an npm package, so
+there is nothing to update and nothing extra in the build.
+
+## D-027. Clips and notes live in the engine now; every mouse edit is one command. *Asked for by Dzyan 2026-11-21.*
+
+He asked for intuitive mouse work: dragging, moving, copy and paste, clicking. Faking that in the
+UI would have left undo, the crash journal and the CLI blind to it, so clips and notes moved into
+the project model ahead of the rest of M2 (transport and audio still wait for M0).
+- Model: `Clip { track, start, length, offset, gain_db, content }`, content audio (a source file
+  name) or MIDI notes. Positions are integer ticks, 960 per beat, so edits never drift. Format 2;
+  format-1 projects open with no clips.
+- Commands: `clip.add/remove/move/copy/trim/split/rename/gain/quantize/list/notes`,
+  `note.add/remove/edit`, `edit.copy/cut/paste`, `project.demo`. A command naming several clips
+  (`#3,#5`) is one undo step. The clipboard lives in the engine so the CLI and the window share
+  it; `edit.copy` is journaled so a paste survives a crash (tested).
+- Mouse model (`app/src/timeline.ts` header): click selects, Shift adds, Ctrl toggles; drag
+  moves in time and across tracks; Ctrl+drag copies; dragging a clip edge trims; dragging empty
+  space draws a selection box; a plain click there moves the playhead; double-click empty space
+  on an instrument track makes a 1-bar MIDI clip. Snapping follows the grid control above the
+  track list; Alt drags free. Drags preview locally and send one command on release.
+- Keys: Ctrl+C/X/V, Ctrl+D duplicate, Ctrl+E split at the playhead (export moved to
+  Ctrl+Shift+E), Del deletes clips, Ctrl+Del removes the track, arrows nudge.
+- Piano roll: drag notes to move, drag the end to resize, velocity lane, Draw tool, double-click
+  to delete, quantize. All `note.*` commands.
+- Audio waveforms are still made up (no import yet) and say so on screen.
+
+## D-028. Layout themes. *Asked for by Dzyan 2026-11-21.*
+
+"Give user a way to switch between a few different GUI setups ... some people just prefer
+different layouts." Five layouts: Studio (default), Compact (laptop), Touch (bigger targets),
+Side editor (editors on the right, full-height timeline) and Mixing (mixer takes most of the
+screen). Chosen in Settings, Appearance, or with Ctrl+Shift+L; remembered per computer.
+The lean rule shaped it: a layout is data, a name on the page that the stylesheet turns into
+sizes and grid areas. Every layout runs the same views and code, so a new layout costs a few
+lines of CSS and cannot break behaviour. Free-form docking and floating panels were not built:
+they multiply states to test and are the clutter this project exists to avoid. A layout preference
+is per-machine UI state, not a project command; it becomes a `prefs.*` command when the settings
+file exists.
+
+## D-029. Jade green accent and the crucible-and-wave mark. *Decided by Dzyan 2026-11-21.*
+
+"Instead of orange let's go with green, be a little subtle and seamless about it ... make a
+musical/crucible like logo." Accent `#45c08f` (jade), a darker hover, and no orange anywhere:
+track colours are cool and muted so the accent and the red record and clip warnings stand out.
+The mark is a crucible with a sound wave cut through its body. It is drawn in `app/src/icons.ts`
+for the window and by `app/icon.py` (standard-library Python) for the app icon, from the same
+shapes. Accent swatches in Settings start with the green; the others stay as choices.
 
 ---
 

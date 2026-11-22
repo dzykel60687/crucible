@@ -6,7 +6,13 @@ export type Tab = 'mixer' | 'piano' | 'clip' | 'console'
 
 export const ui = {
   selTrack: null as number | null,
+  /** Selected clips; selClip is the one the editors show (the last clicked). */
+  selClips: new Set<number>(),
   selClip: null as number | null,
+  /** Grid for clip edits, in beats. 0 = off. Hold Alt while dragging to ignore it. */
+  snap: 1,
+  /** Where the keyboard's Delete and arrows act. */
+  focus: 'timeline' as 'timeline' | 'piano',
   tab: 'mixer' as Tab,
   panelOpen: true,
   pxPerBeat: 28,
@@ -16,7 +22,7 @@ export const ui = {
 }
 
 export let state: State = {
-  project: { format: 1, name: '…', sample_rate: 48000, tempo_bpm: 120, time_signature: [4, 4], master_gain_db: 0, tracks: [], next_track_id: 1 },
+  project: { format: 1, name: '…', sample_rate: 48000, tempo_bpm: 120, time_signature: [4, 4], master_gain_db: 0, tracks: [], next_track_id: 1, clips: [], next_clip_id: 1 },
   folder: null, dirty: false, undo: null, redo: null, journal: false,
 }
 
@@ -77,6 +83,24 @@ export function bpb(): number {
 
 export function track(id: number | null) {
   return state.project.tracks.find((t) => t.id === id)
+}
+
+export function clip(id: number | null) {
+  return state.project.clips.find((c) => c.id === id)
+}
+
+/** Replace the clip selection. The last id becomes the one the editors show. */
+export function selectClips(ids: Iterable<number>) {
+  ui.selClips = new Set(ids)
+  const last = [...ui.selClips].at(-1)
+  ui.selClip = last ?? null
+  const c = clip(last ?? null)
+  if (c) ui.selTrack = c.track
+}
+
+/** Ids a command reported creating (copy, paste, split), so they can be selected. */
+export function created(replies: { data?: any }[]): number[] {
+  return replies.flatMap((r) => (Array.isArray(r.data?.created) ? r.data.created : []))
 }
 
 // ------------------------------------------------------------------ toasts

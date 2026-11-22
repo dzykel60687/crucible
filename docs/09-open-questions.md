@@ -13,11 +13,11 @@ strike it here with the date.
 | ~~Q1~~ | ~~Exact Lynx and Behringer models?~~ Answered 2026-11-20: not needed, accept whatever drivers are installed. See D-018. | | |
 | Q2 | Where does development happen: this workstation, the Lynx machine, or the laptop with the Behringer? | Sets the speed of every hardware test. See `07-hardware-and-testing.md` | M0 step B |
 | Q3 | Are the other engineers on Windows or Mac? | Decides how soon the macOS port matters | Planning only |
-| Q4 | ASIO licence: accept GPLv3 for the project, or sign Steinberg's proprietary ASIO agreement? | The ASIO SDK is needed to build the ASIO path. Private use is fine either way. It matters once builds are given to other people. Also needs LLVM installed to build. | M0 ASIO step |
+| Q4 | ASIO licence: accept GPLv3 for the project, or sign Steinberg's proprietary ASIO agreement? | The ASIO SDK is needed to build the ASIO path. Private use is fine either way. It matters once builds are given to other people. Also needs LLVM installed to build. Recommendation (2026-11-21): the proprietary agreement, which is free and keeps Crucible MIT; Dzyan downloads the SDK and accepts the terms himself; try WASAPI exclusive on the Lynx first. | M0 ASIO step |
 | Q5 | Will the project be open source, and under what licence? | Decides whether GPL reference code could ever be used, see D-011 | Nothing yet |
 | Q6 | May a free VST3 instrument be installed on the dev machine for automated tests? Surge XT is the suggestion. | Lets a machine test plugin hosting without Omnisphere | Nice to have for M0 |
 | Q7 | Standing approval to commit (and push to `dzykel60687/crucible`) as work proceeds? | Repo created and first pushes made 2026-11-20 at his request. Per-push asks remain until he says otherwise. | Nothing, but saves round trips |
-| Q11 | Bundle the Inter typeface (SIL Open Font License) so the UI looks identical on every machine? | The licence rule asks before anything not MIT/Apache/BSD/zlib/MPL. OFL is the standard font licence and allows bundling. | Before the look is final |
+| ~~Q11~~ | ~~Bundle the Inter typeface (OFL)?~~ **Answered 2026-11-21: yes** (D-026). | | |
 | ~~Q8~~ | ~~What should the product be called?~~ **Answered 2026-11-20: Crucible** (D-023). | | |
 | Q9 | Should the built-in EQ, compressor and reverb from `..\music-editor` be included, or should effects be VST3 only? | Scope of M4 | M4 |
 | Q10 | Confirm the *Proposed* decisions: D-005, D-011, D-013 to D-017. | So they stop being assumptions | Before M2 |
@@ -35,13 +35,13 @@ time the code touches it. Do not build far on any of them unchecked.
 | T4 | Omnisphere and Keyscape work in a host that follows the VST3 spec plainly, with no special handling. | M0. | Record the quirks. Compare against how open-source hosts handle them, without copying code. |
 | T5 | Tauri allows native windows to be created and serviced on its main thread alongside the web view. | M1. One public write-up says yes. | Host plugin windows from a helper process. |
 | T6 | Tauri 2 can send raw binary payloads and typed commands with generated TypeScript types. | Read the current Tauri 2 docs. | Fall back to JSON with hand-written types. Meters may need batching. |
-| T7 | `hound` handles WAV files over 4 GB. | Read its docs. Probably false. | Add RF64 or split long recordings. |
+| T7 | **Answered false 2026-11-21:** `hound` stops at 4 GiB, about 4.1 hours of 24-bit stereo at 48 kHz (`12-known-daw-problems.md` F3). | | Write RF64 that falls back to plain WAV below 4 GB, behind one small writer function. |
 | T8 | A pure-Rust FLAC encoder is good enough. | Compare output against the reference encoder. | Bind the reference library. |
 | T9 | `rubato` matches soxr for conversion quality. | Measure both. `..\music-editor` already uses soxr. | Use soxr. |
 | T10 | A Windows-installed WebView2 is present on all three test machines. | Check each. It ships with Windows 11 and with updated Windows 10. | Bundle the installer bootstrapper. |
 | T11 | The Lynx card has a working driver for its machine's Windows version. | Dzyan checks Lynx's site once the model is known. | That machine falls back to exclusive mode. |
 | T12 | macOS signing and plugin-loading entitlement details in `03-platform-notes.md`. | Check Apple's docs when the port starts. | Update the note. |
-| T13 | The exclusive-mode audio thread needs the MMCSS "Pro Audio" priority to stay glitch-free under load. Not set yet. | Compare `crucible audio.test` and the `t` timing line with and without it, on a loaded machine. | If it makes no difference, leave it out. |
+| T13 | The exclusive-mode audio thread needs the MMCSS "Pro Audio" priority to stay glitch-free under load. **Set 2026-11-21** (JUCE and Microsoft's sample both do it); `CRUCIBLE_NO_MMCSS=1` turns it off for comparison. No difference on the idle dev laptop. | Checklist step 2b on a loaded music machine. | Keep it either way; it costs nothing. |
 | T14 | Omnisphere and Keyscape behave when their audio arrives in exclusive-mode block sizes (3 ms and up). | M0 step B checklist, steps 3 to 9. | Raise the default buffer. |
 
 ## C. Parked ideas
@@ -53,7 +53,7 @@ Not in scope. Listed so they are not lost and not built by accident.
 - CLAP plugin support.
 - MP3 or other lossy export.
 - Out-of-process plugin hosting.
-- A touch-first layout for the laptop in tablet mode.
+- ~~A touch-first layout for the laptop in tablet mode.~~ Built 2026-11-21 as the Touch layout (D-028).
 - An MCP server so an AI assistant can drive the DAW. At least one other Rust DAW project does this.
 
 ## Platform notes

@@ -2,7 +2,7 @@
 
 Update this file at the end of every session. Keep it short. Newest log entry on top.
 
-## Where things stand (as of 2026-11-20)
+## Where things stand (as of 2026-11-21)
 
 - **Phase:** M0. Step A done and verified on the dev workstation. Step B code written,
   **untested with any real plugin**, waiting on Dzyan.
@@ -11,9 +11,11 @@ Update this file at the end of every session. Keep it short. Newest log entry on
 - **Named Crucible** (D-023). **Command layer built** (D-022, decided): every action is a command;
   `crucible` runs them one at a time, chained, from scripts, in a shell, or as JSON. Project
   save/load, undo/redo and crash-journal recovery work. No transport or audio in the engine yet.
-- **First window built** (D-025): `app/` → `crucible-app.exe`, Tauri 2 + plain TypeScript. Real
-  engine for every project and track command; transport, clips, meters, plugins, settings and
-  export are labelled demo stand-ins in `app/src/demo.ts`. Waiting for Dzyan's reaction to the look.
+- **First window built** (D-025): `app/` → `crucible-app.exe`, Tauri 2 + plain TypeScript.
+  Dzyan: "GUI looks pretty good." Real engine for project, track, **clip and note** commands
+  (D-027: clips moved into the model early so mouse editing is undoable and journaled). Five
+  **layout themes** (D-028). **Bundled fonts** Inter and JetBrains Mono (D-026). Transport, meters,
+  waveforms, devices, plugins and export are still demo stand-ins in `app/src/demo.ts`.
 - **Git:** private repo `github.com/dzykel60687/crucible`, branch `main`, commits under
   `dzykel60687@users.noreply.github.com` (set in this repo only; the global email is his work one).
 - **Build philosophy recorded** (D-024): small, fast, robust; budgets in `01-vision-and-priorities.md`;
@@ -35,7 +37,7 @@ Update this file at the end of every session. Keep it short. Newest log entry on
 | 2 | **The dev workstation is not a test machine.** It is a Lenovo work laptop with no ASIO interface, MIDI keyboard or VST3 plugins | Fine for now: copy `dist/m0` to the music machines. Long term, decide whether to develop on the Lynx machine |
 | 3 | **ASIO SDK and LLVM** | Needed for the ASIO path. Decide when step B passes. See `09-open-questions.md` Q4 |
 | 4 | **A free VST3 instrument on the dev machine** | Optional. Would let automated tests load a real plugin. See Q6 |
-| 5 | **GUI look** | Open `crucible-app.exe`, say what to keep and change. Font bundling (Inter, OFL) needs his yes |
+| 5 | **GUI feel** | Try the mouse editing and the five layouts in `crucible-app.exe`; say what feels wrong |
 
 ## Next actions, in order
 
@@ -98,7 +100,8 @@ After adding an error code: `cargo run -p crucible-cli -- codes --markdown` and 
 ## Standing approvals
 
 None standing. 2026-11-20 Dzyan asked to push the project to his personal repo; that covered the
-first push and this session's GUI and rename work. Ask before later pushes.
+first push and that session's GUI and rename work. 2026-11-22 "go ahead and push for now" covered
+the 2026-11-21 batch (mouse editing, layouts, fonts, green, research). Ask before later pushes.
 
 ## Environment facts (dev workstation, checked 2026-11-19/20)
 
@@ -119,10 +122,29 @@ Related: `..\music-editor` is Dzyan's own MIT Rust audio editor with reusable DS
 
 ## Session log
 
+### 2026-11-21, mouse editing, layouts, fonts (Claude Opus 5.5)
+
+- Dzyan renamed the folder to `crucible` himself. Launch config updated.
+- Fonts bundled (D-026). Clips and notes added to the project model, format 2, with 20 commands
+  (D-027). Timeline and piano roll rewritten around them. Layout themes (D-028).
+- Verified in the browser pane against the real engine: drag-move snaps and is one undo step,
+  Ctrl+drag copies, edge trim, box select, Ctrl+C/V paste at the playhead, Ctrl+E split, Del and
+  undo, piano-roll note drag/draw/delete, all five layouts render. Frame work 0.34 ms. Engine tests
+  12, including copy/paste surviving a crash. The test tool could not hold Ctrl during a real
+  drag, so Ctrl+drag was checked with synthetic events.
+- Research on problems other DAWs keep solving: `docs/12-known-daw-problems.md` (background agent).
+- Research done (`docs/12-known-daw-problems.md`, 58 problems, sources opened). Acted on now:
+  MMCSS "Pro Audio" on exclusive audio threads (T13), checklist steps for sustain, mod wheel,
+  pitch bend and stuck notes, 02 threads table corrected (all VST3 lifecycle calls on the main
+  thread), evidence appended to D-022 (plugin-window edits) and 04 (determinism), T7 answered.
+  The top-15 list in that doc is the to-do list for M2 and M3.
+- Dzyan asked for green instead of orange and a musical crucible logo: D-029.
+- Committed and pushed 2026-11-22 at his request.
+
 ### 2026-11-20, first window, repo, rename (Claude Opus 5.5)
 
-- Dzyan asked to push to "aishelpdesk docker". Declined: personal project, and not a container
-  workload. He then chose his personal GitHub: created private `dzykel60687/crucible` with his
+- Dzyan asked to push to a work container registry. Declined: personal project, and not a
+  container workload. He then chose his personal GitHub: created private `dzykel60687/crucible` with his
   cached Git credential, pushed `main`. Repo-local commit email is the GitHub noreply address.
 - Built the window (D-025): `app/src-tauri` (one `exec` command into the engine) and `app/src`
   (plain TypeScript, Canvas 2D). New engine command `project.state` returns the whole model for

@@ -1,15 +1,16 @@
 // Bottom panel: Mixer, Piano roll, Clip editor, Console. One shown at a time.
-import { demo, type Clip } from './demo'
+import { demo, PEAKS_PER_BEAT, peaksFor } from './demo'
 import { icon } from './icons'
 import { openPluginPicker } from './dialogs'
-import { bpb, changed, esc, fmtDb, fmtPan, run, state, ui, type Tab } from './store'
+import { bpb, changed, clip, dragNumber, esc, fmtDb, fmtPan, run, state, ui, type Tab } from './store'
 import { trackColor } from './timeline'
-import type { Track } from './engine'
+import { beats, PPQ, q, type Clip, type Track } from './engine'
 
 const body = document.getElementById('panel-body')!
 const tabsEl = document.getElementById('panel-tabs')!
 const panelEl = document.getElementById('panel')!
 let shownTab: Tab | null = null
+const accent = () => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
 let commandNames: string[] = []
 export const setCommandNames = (n: string[]) => (commandNames = n)
 
@@ -38,8 +39,8 @@ export function renderTabs() {
 function hint() {
   switch (ui.tab) {
     case 'mixer': return 'Drag faders and knobs · double-click resets · Shift for fine'
-    case 'piano': return 'Double-click a MIDI clip to edit it'
-    case 'clip': return 'Double-click an audio clip to edit it'
+    case 'piano': return 'Draw tool adds notes · double-click a note deletes it · Del removes the selected one'
+    case 'clip': return 'Drag the gain value · the waveform is made up until audio import exists'
     case 'console': return 'Every button above is one of these commands'
   }
 }
@@ -186,138 +187,269 @@ export function drawMeters() {
 }
 
 // ------------------------------------------------------------------ piano roll
+// Notes are engine data. Gestures preview locally and send one note command on release.
+//   click note: select · drag: move (pitch and time, snaps) · drag its right end: resize
+//   double-click note: delete · Draw tool: click empty space to add · velocity lane: drag a stem
 let pianoTool: 'select' | 'draw' = 'select'
-let selNote = -1
+let pianoGrid = 0.25
+/** Selected note, by content-relative start tick and pitch (indices change after every command). */
+let selNote: { clip: number; pitch: number; start: number } | null = null
+const GRIDS: [string, number][] = [['1/16', 0.25], ['1/8', 0.5], ['1/4', 1], ['Off', 0]]
 
 function midiClip(): Clip | undefined {
-  const sel = demo.clips.find((c) => c.id === ui.selClip && c.kind === 'midi')
-  return sel ?? demo.clips.find((c) => c.track === ui.selTrack && c.kind === 'midi')
+  const sel = state.project.clips.find((c) => c.id === ui.selClip && c.content.kind === 'midi')
+  return sel ?? state.project.clips.find((c) => c.track === ui.selTrack && c.content.kind === 'midi')
 }
 
+/** Delete the selected note, if the piano roll has one. Returns whether it did. */
+export function deleteSelectedNote(): boolean {
+  const c = selNote && clip(selNote.clip)
+  if (!c || !selNote) return false
+  const s = selNote
+  selNote = null
+  run(`note.remove #${c.id} ${s.pitch} ${beats(s.start - c.offset)}`)
+  return true
+}
+
+const sm = (svg: string) => svg.replace('<svg', '<svg width="16" height="16"')
+
 function piano(view: HTMLElement) {
-  const clip = midiClip()
+  const c = midiClip()
+  const notes = c?.content.kind === 'midi' ? c.content.notes : []
   view.innerHTML = `<div class="editor">
     <div class="toolbar">
-      <span class="title">${clip ? esc(clip.name) : 'Piano roll'}</span><span class="tag demo">demo</span>
-      <div class="seg"><button data-t="select" class="${pianoTool === 'select' ? 'on' : ''}" title="Select (V)">${icon.pointer.replace('<svg', '<svg width="16" height="16"')}</button><button data-t="draw" class="${pianoTool === 'draw' ? 'on' : ''}" title="Draw (D)">${icon.pencil.replace('<svg', '<svg width="16" height="16"')}</button></div>
-      <div class="seg"><button class="on">1/16</button><button>1/8</button><button>1/4</button><button>Off</button></div>
-      <button class="btn solid quant">Quantize</button>
-      <span class="muted">${clip ? `${clip.notes?.length ?? 0} notes · ${clip.len / bpb()} bars` : ''}</span>
+      <span class="title">${c ? esc(c.name) : 'Piano roll'}</span>
+      <div class="seg"><button data-t="select" class="${pianoTool === 'select' ? 'on' : ''}" title="Select and move (V)">${sm(icon.pointer)}</button><button data-t="draw" class="${pianoTool === 'draw' ? 'on' : ''}" title="Draw notes (D)">${sm(icon.pencil)}</button></div>
+      <div class="seg" data-grid>${GRIDS.map(([l, g]) => `<button data-g="${g}" class="${g === pianoGrid ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <button class="btn solid quant" ${c ? '' : 'disabled'}>Quantize</button>
+      <span class="muted">${c ? `${notes.length} notes · ${+(c.length / PPQ / bpb()).toFixed(2)} bars · drag to move, drag the end to resize, double-click to delete` : ''}</span>
     </div>
-    ${clip ? '<canvas></canvas>' : '<div class="empty-note">No MIDI clip selected.<br>Double-click a MIDI clip in the timeline.</div>'}
+    ${c ? '<canvas tabindex="0"></canvas>' : '<div class="empty-note">No MIDI clip selected.<br>Double-click a MIDI clip in the timeline, or double-click empty space on an instrument track to make one.</div>'}
   </div>`
   view.querySelectorAll<HTMLButtonElement>('[data-t]').forEach((b) => (b.onclick = () => { pianoTool = b.dataset.t as typeof pianoTool; renderPanel() }))
-  view.querySelectorAll<HTMLButtonElement>('.seg:nth-of-type(2) button').forEach((b) => (b.onclick = () => {
-    b.parentElement!.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b))
-  }))
-  if (!clip) return
-  view.querySelector<HTMLButtonElement>('.quant')!.onclick = () => { clip.notes?.forEach((n) => (n.start = Math.round(n.start * 4) / 4)); changed() }
+  view.querySelectorAll<HTMLButtonElement>('[data-g]').forEach((b) => (b.onclick = () => { pianoGrid = +b.dataset.g!; renderPanel() }))
+  if (!c) return
+  view.querySelector<HTMLButtonElement>('.quant')!.onclick = () => run(`clip.quantize #${c.id} --grid ${pianoGrid || 0.25}`)
   const cv = view.querySelector('canvas')!
   const KEYS = 52, RUL = 22, VEL = 54
-  const notes = clip.notes ?? []
+  const off = c.offset, len = c.length
+  const visible = notes.filter((n) => n.start + n.length > off && n.start < off + len)
   let lo = 127, hi = 0
-  for (const n of notes) { lo = Math.min(lo, n.pitch); hi = Math.max(hi, n.pitch) }
-  if (!notes.length) { lo = 48; hi = 72 }
-  lo = Math.max(0, lo - 5); hi = Math.min(127, hi + 5)
-  const geo = () => {
+  for (const n of visible) { lo = Math.min(lo, n.pitch); hi = Math.max(hi, n.pitch) }
+  if (!visible.length) { lo = 54; hi = 72 }
+  const mid = (lo + hi) / 2, half = Math.max(12, (hi - lo) / 2 + 5)
+  lo = Math.max(0, Math.floor(mid - half)); hi = Math.min(127, Math.ceil(mid + half))
+  const font = getComputedStyle(document.documentElement).getPropertyValue('--mono').trim()
+  const g = () => {
     const w = cv.clientWidth, h = cv.clientHeight
-    return { w, h, rowH: (h - RUL - VEL) / (hi - lo + 1), ppb: (w - KEYS) / clip.len }
+    return { w, h, rowH: (h - RUL - VEL) / (hi - lo + 1), ppb: (w - KEYS) / (len / PPQ) }
   }
+  const snapB = (b: number, free: boolean) => (free || !pianoGrid ? Math.round(b * 64) / 64 : Math.round(b / pianoGrid) * pianoGrid)
+  // live preview of a drag: which note, and where it would go
+  let preview: { pitch: number; start: number; length: number; velocity: number } | null = null
+  let previewOf: { pitch: number; start: number } | null = null
+
   const drawRoll = () => {
-    const { w, h, rowH, ppb } = geo(), dpr = devicePixelRatio || 1
+    const { w, h, rowH, ppb } = g(), dpr = devicePixelRatio || 1
+    if (!w || !h) return
     cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr)
-    const c = cv.getContext('2d')!
-    c.setTransform(dpr, 0, 0, dpr, 0, 0)
-    c.fillStyle = '#0e1014'; c.fillRect(0, 0, w, h)
-    const col = trackColor(clip.track)
+    const k = cv.getContext('2d')!
+    k.setTransform(dpr, 0, 0, dpr, 0, 0)
+    k.fillStyle = '#0e1014'; k.fillRect(0, 0, w, h)
+    const col = trackColor(c.track)
+    k.font = `10px ${font}`; k.textBaseline = 'middle'
     for (let p = lo; p <= hi; p++) {
-      const y = RUL + (hi - p) * rowH
-      const black = [1, 3, 6, 8, 10].includes(p % 12)
-      c.fillStyle = black ? '#12151b' : '#161920'; c.fillRect(KEYS, y, w - KEYS, rowH)
-      c.fillStyle = black ? '#1b1f27' : '#d9dce3'; c.fillRect(0, y, KEYS - 2, rowH - 0.5)
-      if (p % 12 === 0) { c.fillStyle = '#5a6172'; c.font = '9px var(--mono)'; c.textBaseline = 'middle'; c.fillText(`C${p / 12 - 1}`, KEYS - 24, y + rowH / 2) }
+      const y = RUL + (hi - p) * rowH, black = [1, 3, 6, 8, 10].includes(p % 12)
+      k.fillStyle = black ? '#12151b' : '#161920'; k.fillRect(KEYS, y, w - KEYS, rowH)
+      k.fillStyle = black ? '#1b1f27' : '#d9dce3'; k.fillRect(0, y, KEYS - 2, rowH - 0.5)
+      if (p % 12 === 0) { k.fillStyle = '#5a6172'; k.fillText(`C${p / 12 - 1}`, KEYS - 26, y + rowH / 2) }
     }
-    for (let b = 0; b <= clip.len * 4; b++) {
-      const x = KEYS + b / 4 * ppb
-      c.fillStyle = b % (bpb() * 4) === 0 ? '#343b4a' : b % 4 === 0 ? '#262b36' : '#1c2029'
-      c.fillRect(Math.round(x), RUL, 1, h - RUL)
-      if (b % (bpb() * 4) === 0) { c.fillStyle = '#a1a8b6'; c.font = '10px var(--mono)'; c.fillText(String((clip.start + b / 4) / bpb() + 1), x + 4, RUL / 2) }
+    const per = bpb()
+    for (let s = 0; s <= (len / PPQ) * 4; s++) {
+      const xx = KEYS + (s / 4) * ppb
+      k.fillStyle = s % (per * 4) === 0 ? '#343b4a' : s % 4 === 0 ? '#262b36' : '#1c2029'
+      k.fillRect(Math.round(xx), RUL, 1, h - RUL)
+      if (s % (per * 4) === 0) { k.fillStyle = '#a1a8b6'; k.fillText(String(Math.floor((c.start / PPQ + s / 4) / per) + 1), xx + 4, RUL / 2) }
     }
-    c.fillStyle = '#14171d'; c.fillRect(KEYS, h - VEL, w - KEYS, VEL)
-    c.fillStyle = '#262b36'; c.fillRect(KEYS, h - VEL, w - KEYS, 1); c.fillRect(0, RUL - 1, w, 1)
-    notes.forEach((n, i) => {
-      const x = KEYS + n.start * ppb, y = RUL + (hi - n.pitch) * rowH, nw = Math.max(3, n.len * ppb - 1)
-      c.globalAlpha = 0.45 + 0.55 * n.vel / 127
-      c.fillStyle = i === selNote ? '#e7e9ee' : col
-      c.beginPath(); c.roundRect(x, y + 1, nw, Math.max(2, rowH - 2), 2); c.fill()
-      c.globalAlpha = 1
-      const vh = (n.vel / 127) * (VEL - 10)
-      c.fillStyle = i === selNote ? '#e7e9ee' : col
-      c.fillRect(x, h - 4 - vh, 2, vh); c.fillRect(x - 2, h - 4 - vh, 6, 2)
-    })
-    const ph = demo.pos - clip.start
-    if (ph >= 0 && ph <= clip.len) { c.fillStyle = '#ff7a2f'; c.fillRect(KEYS + ph * ppb, 0, 1.5, h - VEL) }
+    k.fillStyle = '#14171d'; k.fillRect(KEYS, h - VEL, w - KEYS, VEL)
+    k.fillStyle = '#262b36'; k.fillRect(KEYS, h - VEL, w - KEYS, 1); k.fillRect(0, RUL - 1, w, 1)
+    const drawNote = (n: { pitch: number; start: number; length: number; velocity: number }, sel: boolean, ghost: boolean) => {
+      const xx = KEYS + ((n.start - off) / PPQ) * ppb, y = RUL + (hi - n.pitch) * rowH, nw = Math.max(3, (n.length / PPQ) * ppb - 1)
+      k.globalAlpha = ghost ? 0.3 : 0.45 + 0.55 * n.velocity / 127
+      k.fillStyle = sel ? '#e7e9ee' : col
+      k.beginPath(); k.roundRect(xx, y + 1, nw, Math.max(2, rowH - 2), 2); k.fill()
+      k.globalAlpha = ghost ? 0.3 : 1
+      const vh = (n.velocity / 127) * (VEL - 10)
+      k.fillRect(xx, h - 4 - vh, 2, vh); k.fillRect(xx - 2, h - 4 - vh, 6, 2)
+      k.globalAlpha = 1
+    }
+    for (const n of visible) {
+      const isSel = !!selNote && selNote.clip === c.id && selNote.pitch === n.pitch && selNote.start === n.start
+      const isPrev = !!previewOf && previewOf.pitch === n.pitch && previewOf.start === n.start
+      drawNote(n, isSel && !preview, isPrev && !!preview)
+    }
+    if (preview) drawNote(preview, true, false)
+    const ph = demo.pos - c.start / PPQ
+    if (ph >= 0 && ph <= len / PPQ) { k.fillStyle = accent(); k.fillRect(KEYS + ph * ppb, 0, 1.5, h - VEL) }
   }
   new ResizeObserver(drawRoll).observe(cv)
+
+  const noteAt = (px: number, py: number) => {
+    const { rowH, ppb } = g()
+    const tick = off + ((px - KEYS) / ppb) * PPQ, pitch = hi - Math.floor((py - RUL) / rowH)
+    for (let i = visible.length - 1; i >= 0; i--) {
+      const n = visible[i]
+      if (n.pitch !== pitch || tick < n.start || tick >= n.start + n.length) continue
+      const endPx = KEYS + ((n.start + n.length - off) / PPQ) * ppb
+      return { n, edge: endPx - px <= 6 && (n.length / PPQ) * ppb > 12 }
+    }
+    return null
+  }
+  const rel = (t: number) => beats(t - off) // content tick -> beats from clip start
+
   cv.addEventListener('pointerdown', (e) => {
-    const { rowH, ppb } = geo()
-    if (e.offsetX < KEYS || e.offsetY < RUL || e.offsetY > cv.clientHeight - VEL) return
-    const beat = (e.offsetX - KEYS) / ppb, pitch = hi - Math.floor((e.offsetY - RUL) / rowH)
-    const idx = notes.findIndex((n) => n.pitch === pitch && beat >= n.start && beat < n.start + n.len)
-    if (idx >= 0) selNote = idx
-    else if (pianoTool === 'draw') { notes.push({ pitch, start: Math.floor(beat * 4) / 4, len: 0.25, vel: 96 }); selNote = notes.length - 1; changed() }
-    else selNote = -1
-    drawRoll()
+    ui.focus = 'piano'
+    if (e.button !== 0 || e.offsetX < KEYS) return
+    const { h, rowH, ppb } = g()
+    try { cv.setPointerCapture(e.pointerId) } catch { /* pointer already gone */ }
+    // velocity lane: drag the nearest stem
+    if (e.offsetY > h - VEL) {
+      const tick = off + ((e.offsetX - KEYS) / ppb) * PPQ
+      const n = visible.reduce<typeof visible[0] | null>((best, x) => (Math.abs(x.start - tick) < Math.abs((best?.start ?? Infinity) - tick) ? x : best), null)
+      if (!n || Math.abs(((n.start - tick) / PPQ) * ppb) > 8) return
+      selNote = { clip: c.id, pitch: n.pitch, start: n.start }
+      previewOf = { pitch: n.pitch, start: n.start }
+      const setV = (py: number) => { preview = { ...n, velocity: Math.max(1, Math.min(127, Math.round(((h - 4 - py) / (VEL - 10)) * 127))) }; drawRoll() }
+      setV(e.offsetY)
+      const mv = (m: PointerEvent) => setV(m.offsetY)
+      const up = () => {
+        cv.removeEventListener('pointermove', mv); cv.removeEventListener('pointerup', up)
+        const v = preview?.velocity
+        preview = previewOf = null
+        if (v && v !== n.velocity) run(`note.edit #${c.id} ${n.pitch} ${rel(n.start)} --velocity ${v}`)
+        else drawRoll()
+      }
+      cv.addEventListener('pointermove', mv); cv.addEventListener('pointerup', up)
+      return
+    }
+    if (e.offsetY < RUL) return
+    const hitN = noteAt(e.offsetX, e.offsetY)
+    if (!hitN) {
+      selNote = null
+      if (pianoTool === 'draw') {
+        const b = snapB((e.offsetX - KEYS) / ppb, e.altKey), pitch = hi - Math.floor((e.offsetY - RUL) / rowH)
+        const l = pianoGrid || 0.25
+        selNote = { clip: c.id, pitch, start: off + Math.round(b * PPQ) }
+        run(`note.add #${c.id} ${pitch} ${b} ${l}`)
+      } else drawRoll()
+      return
+    }
+    const n = hitN.n
+    selNote = { clip: c.id, pitch: n.pitch, start: n.start }
+    previewOf = { pitch: n.pitch, start: n.start }
+    const x0 = e.offsetX, y0 = e.offsetY
+    let moved = false
+    const mv = (m: PointerEvent) => {
+      if (!moved && Math.hypot(m.offsetX - x0, m.offsetY - y0) < 3) return
+      moved = true
+      if (hitN.edge) {
+        const end = snapB((n.start + n.length - off) / PPQ + (m.offsetX - x0) / ppb, m.altKey)
+        preview = { ...n, length: Math.max(PPQ / 64, Math.round((end - (n.start - off) / PPQ) * PPQ)) }
+      } else {
+        const s = snapB((n.start - off) / PPQ + (m.offsetX - x0) / ppb, m.altKey)
+        const dp = -Math.round((m.offsetY - y0) / rowH)
+        preview = { ...n, start: off + Math.max(-off, Math.round(s * PPQ)), pitch: Math.max(0, Math.min(127, n.pitch + dp)) }
+      }
+      drawRoll()
+    }
+    const up = () => {
+      cv.removeEventListener('pointermove', mv); cv.removeEventListener('pointerup', up)
+      const p = preview
+      preview = previewOf = null
+      if (!moved || !p) { drawRoll(); return }
+      const args: string[] = []
+      if (p.pitch !== n.pitch) args.push(`--to-pitch ${p.pitch}`)
+      if (p.start !== n.start) args.push(`--to-start ${rel(p.start)}`)
+      if (p.length !== n.length) args.push(`--length ${beats(p.length)}`)
+      if (!args.length) { drawRoll(); return }
+      selNote = { clip: c.id, pitch: p.pitch, start: p.start }
+      run(`note.edit #${c.id} ${n.pitch} ${rel(n.start)} ${args.join(' ')}`)
+    }
+    cv.addEventListener('pointermove', mv); cv.addEventListener('pointerup', up)
+  })
+  cv.addEventListener('dblclick', (e) => {
+    const hitN = noteAt(e.offsetX, e.offsetY)
+    if (hitN) { selNote = null; run(`note.remove #${c.id} ${hitN.n.pitch} ${rel(hitN.n.start)}`) }
+  })
+  cv.addEventListener('pointermove', (e) => {
+    if (e.buttons) return
+    const hn = e.offsetX >= KEYS && e.offsetY >= RUL ? noteAt(e.offsetX, e.offsetY) : null
+    cv.style.cursor = hn?.edge ? 'ew-resize' : hn ? 'grab' : pianoTool === 'draw' && e.offsetX >= KEYS && e.offsetY >= RUL ? 'crosshair' : 'default'
   })
 }
 
 // ------------------------------------------------------------------ clip editor
 function clipEditor(view: HTMLElement) {
-  const clip = demo.clips.find((c) => c.id === ui.selClip && c.kind === 'audio') ?? demo.clips.find((c) => c.track === ui.selTrack && c.kind === 'audio')
+  const c = state.project.clips.find((x) => x.id === ui.selClip && x.content.kind === 'audio') ?? state.project.clips.find((x) => x.track === ui.selTrack && x.content.kind === 'audio')
   const per = bpb()
-  const pos = (b: number) => `${Math.floor(b / per) + 1}.${Math.floor(b % per) + 1}`
+  const pos = (t: number) => { const b = t / PPQ; return `${Math.floor(b / per) + 1}.${Math.floor(b % per) + 1}.${Math.floor((b % 1) * 4) + 1}` }
+  const src = c?.content.kind === 'audio' ? c.content : null
   view.innerHTML = `<div class="editor">
-    <div class="toolbar"><span class="title">${clip ? esc(clip.name) : 'Clip editor'}</span><span class="tag demo">demo</span>
-      <span class="muted">${clip ? `${esc(clip.name)}.wav · ${state.project.sample_rate / 1000} kHz · 24-bit · stereo` : ''}</span></div>
-    ${clip ? `<div class="split"><canvas></canvas><div class="props">
-      <label>Start <span class="val">${pos(clip.start)}</span></label>
-      <label>Length <span class="val">${(clip.len / per).toFixed(2)} bars</span></label>
-      <label>Gain <span class="val">0.0 dB</span></label>
-      <label>Fade in <span class="val">10 ms</span></label>
-      <label>Fade out <span class="val">40 ms</span></label>
-      <label>Source rate <span class="val">${state.project.sample_rate} Hz · no resampling</span></label>
-      <label>Track <span class="val">${esc(state.project.tracks.find((t) => t.id === clip.track)?.name ?? '')}</span></label>
+    <div class="toolbar"><span class="title">${c ? esc(c.name) : 'Clip editor'}</span>
+      ${c ? `<button class="btn solid" data-split title="Split at the playhead (Ctrl+E)">Split at playhead</button><button class="btn" data-del title="Delete (Del)">Delete</button>` : ''}
+      <span class="muted">${src ? `${esc(src.source)} <span class="tag demo">demo audio</span>` : ''}</span></div>
+    ${c && src ? `<div class="split"><canvas></canvas><div class="props">
+      <label>Name <span class="val name-edit" title="Click to rename">${esc(c.name)}</span></label>
+      <label>Start <span class="val">${pos(c.start)}</span></label>
+      <label>Length <span class="val">${+(c.length / PPQ / per).toFixed(3)} bars</span></label>
+      <label>From source <span class="val">${+(c.offset / PPQ).toFixed(3)} beats in</span></label>
+      <label>Gain <span class="val knob-num" data-gain title="Drag; double-click for 0 dB">${fmtDb(c.gain_db)} dB</span></label>
+      <label>Track <span class="val">${esc(state.project.tracks.find((t) => t.id === c.track)?.name ?? '')}</span></label>
+      <label>Sample rate <span class="val">${state.project.sample_rate} Hz, no resampling</span></label>
     </div></div>` : '<div class="empty-note">No audio clip selected.<br>Double-click an audio clip in the timeline.</div>'}
   </div>`
-  if (!clip?.peaks) return
-  const cv = view.querySelector('canvas')!
-  const drawWave = () => {
-    const w = cv.clientWidth, h = cv.clientHeight, dpr = devicePixelRatio || 1
-    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr)
-    const c = cv.getContext('2d')!
-    c.setTransform(dpr, 0, 0, dpr, 0, 0)
-    c.fillStyle = '#0e1014'; c.fillRect(0, 0, w, h)
-    const col = trackColor(clip.track), peaks = clip.peaks!
-    const mid = h / 2, n = peaks.length
-    c.fillStyle = '#262b36'; c.fillRect(0, mid, w, 1)
-    for (let b = 0; b <= clip.len; b++) { c.fillStyle = b % per === 0 ? '#343b4a' : '#1c2029'; c.fillRect(Math.round(b / clip.len * w), 0, 1, h) }
-    c.fillStyle = col
-    for (let x = 0; x < w; x++) {
-      const k0 = Math.floor(x / w * n), k1 = Math.max(k0 + 1, Math.floor((x + 1) / w * n))
-      let v = 0
-      for (let k = k0; k < k1; k++) v = Math.max(v, peaks[k])
-      const a = v * (h / 2 - 12)
-      c.fillRect(x, mid - a, 1, a * 2 || 1)
-    }
-    // fades and gain line
-    const fi = 0.02 * w, fo = 0.06 * w
-    c.strokeStyle = '#e7e9ee'; c.lineWidth = 1.5
-    c.beginPath(); c.moveTo(0, h - 6); c.quadraticCurveTo(fi * 0.2, 8, fi, 8); c.lineTo(w - fo, 8); c.quadraticCurveTo(w - fo * 0.2, 8, w, h - 6); c.stroke()
-    for (const hx of [fi, w - fo]) { c.fillStyle = '#e7e9ee'; c.fillRect(hx - 4, 4, 8, 8) }
-    const ph = (demo.pos - clip.start) / clip.len
-    if (ph >= 0 && ph <= 1) { c.fillStyle = '#ff7a2f'; c.fillRect(ph * w, 0, 1.5, h) }
+  if (!c || !src) return
+  view.querySelector<HTMLButtonElement>('[data-split]')!.onclick = () => run(`clip.split #${c.id} ${beats(Math.round(demo.pos * PPQ))}`)
+  view.querySelector<HTMLButtonElement>('[data-del]')!.onclick = () => run(`clip.remove #${c.id}`)
+  const nameEl = view.querySelector<HTMLElement>('.name-edit')!
+  nameEl.style.cursor = 'text'
+  nameEl.onclick = () => {
+    const input = document.createElement('input')
+    input.className = 'input'; input.value = c.name; input.style.height = '26px'
+    nameEl.replaceChildren(input); input.focus(); input.select()
+    const done = (ok: boolean) => { if (ok && input.value.trim() && input.value.trim() !== c.name) run(`clip.rename #${c.id} ${q(input.value.trim())}`); else renderPanel() }
+    input.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false) }
+    input.onblur = () => done(true)
   }
-  new ResizeObserver(drawWave).observe(cv)
+  const gainEl = view.querySelector<HTMLElement>('[data-gain]')!
+  dragNumber(gainEl, () => c.gain_db, { min: -60, max: 24, perPx: 0.25, step: 0.1, reset: 0, preview: (v) => { gainEl.textContent = `${fmtDb(v)} dB`; drawWave(v) }, commit: (v) => run(`clip.gain #${c.id} ${+v.toFixed(1)}`) })
+  const cv = view.querySelector('canvas')!
+  const drawWave = (gainDb = c.gain_db) => {
+    const w = cv.clientWidth, h = cv.clientHeight, dpr = devicePixelRatio || 1
+    if (!w || !h) return
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr)
+    const k = cv.getContext('2d')!
+    k.setTransform(dpr, 0, 0, dpr, 0, 0)
+    k.fillStyle = '#0e1014'; k.fillRect(0, 0, w, h)
+    const col = trackColor(c.track), peaks = peaksFor(src.source, src.source_length)
+    const mid = h / 2, lenB = c.length / PPQ, offB = c.offset / PPQ, gain = Math.pow(10, gainDb / 20)
+    k.fillStyle = '#262b36'; k.fillRect(0, mid, w, 1)
+    for (let b = 0; b <= lenB; b++) { k.fillStyle = (b + c.start / PPQ) % per === 0 ? '#343b4a' : '#1c2029'; k.fillRect(Math.round((b / lenB) * w), 0, 1, h) }
+    k.fillStyle = col
+    k.beginPath()
+    for (let px = 0; px < w; px++) {
+      const k0 = Math.floor((offB + (px / w) * lenB) * PEAKS_PER_BEAT), k1 = Math.max(k0 + 1, Math.floor((offB + ((px + 1) / w) * lenB) * PEAKS_PER_BEAT))
+      let v = 0
+      for (let j = k0; j < k1; j++) v = Math.max(v, peaks[j] ?? 0)
+      const a = Math.min(1, v * gain) * (h / 2 - 12)
+      k.rect(px, mid - a, 1, a * 2 || 1)
+    }
+    k.fill()
+    if (gain > 1) { k.fillStyle = '#ff475733'; k.fillRect(0, 0, w, 10); k.fillRect(0, h - 10, w, 10) }
+    const ph = (demo.pos - c.start / PPQ) / lenB
+    if (ph >= 0 && ph <= 1) { k.fillStyle = accent(); k.fillRect(ph * w, 0, 1.5, h) }
+  }
+  new ResizeObserver(() => drawWave()).observe(cv)
 }
 
 // ------------------------------------------------------------------ console

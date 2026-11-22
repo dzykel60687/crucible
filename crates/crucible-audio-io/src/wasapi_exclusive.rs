@@ -9,8 +9,8 @@
 // mode resamples to Windows' mix format and adds latency. Exclusive mode gives the app the
 // device directly. It is required for the laptop, which has no ASIO driver (D-009, D-018).
 //
-// Not done yet: raising the audio thread to the "Pro Audio" MMCSS class (Avrt API). Timing is
-// therefore a little pessimistic until that is added.
+// Audio threads join the "Pro Audio" MMCSS class (Avrt API), as JUCE and Microsoft's own WASAPI
+// sample do (docs/12-known-daw-problems.md A9). Set CRUCIBLE_NO_MMCSS=1 to compare without it (T13).
 
 use crate::convert::{DeviceSampleFormat, write_interleaved};
 use crate::{
@@ -37,6 +37,40 @@ const FORMATS: [(usize, usize, SampleType, DeviceSampleFormat, &str); 5] = [
 
 /// Runs `f` on a fresh thread with COM initialised there, so this module never disturbs COM
 /// state on the caller's thread (cpal also uses COM).
+/// Joins the calling thread to the MMCSS "Pro Audio" class until dropped, so Windows schedules
+/// it ahead of ordinary work. Logs the outcome; call it before `mark_realtime_thread`, which
+/// silences logging on the thread.
+struct ProAudio(windows_sys::Win32::Foundation::HANDLE);
+
+impl ProAudio {
+    fn join() -> Option<ProAudio> {
+        if std::env::var_os("CRUCIBLE_NO_MMCSS").is_some() {
+            crucible_diagnostics::note("audio thread: MMCSS skipped (CRUCIBLE_NO_MMCSS is set)");
+            return None;
+        }
+        let name: Vec<u16> = "Pro Audio".encode_utf16().chain(Some(0)).collect();
+        let mut index = 0u32;
+        // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call; `index` is a
+        // valid out-pointer. The returned handle is released in Drop on this same thread.
+        let h = unsafe { windows_sys::Win32::System::Threading::AvSetMmThreadCharacteristicsW(name.as_ptr(), &mut index) };
+        if h.is_null() {
+            let err = std::io::Error::last_os_error();
+            crucible_diagnostics::warn(Code::LateWakeup, format!("audio thread could not join MMCSS \"Pro Audio\": {err}. Timing may suffer under load."));
+            None
+        } else {
+            crucible_diagnostics::note(format!("audio thread: MMCSS \"Pro Audio\" (task index {index})"));
+            Some(ProAudio(h))
+        }
+    }
+}
+
+impl Drop for ProAudio {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from AvSetMmThreadCharacteristicsW on this thread.
+        unsafe { windows_sys::Win32::System::Threading::AvRevertMmThreadCharacteristics(self.0) };
+    }
+}
+
 fn on_com_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     std::thread::spawn(move || {
         let _ = wasapi::initialize_mta();
@@ -288,6 +322,7 @@ impl SharedStats {
 /// driver's timing holds. Silence keeps the test inaudible.
 pub fn stream_test(device_name: Option<String>, rate: u32, seconds: f64) -> ExclusiveStreamReport {
     on_com_thread(move || {
+        let _mmcss = ProAudio::join();
         crucible_diagnostics::mark_realtime_thread();
         let stats = SharedStats::default();
         let stop = AtomicBool::new(false);
@@ -371,6 +406,7 @@ pub fn open_output(
     let thread = std::thread::Builder::new()
         .name("crucible exclusive audio".into())
         .spawn(move || {
+            let _mmcss = ProAudio::join();
             crucible_diagnostics::mark_realtime_thread();
             let _ = wasapi::initialize_mta();
             let result = match open_render(device_name.as_deref(), rate, period_frames) {

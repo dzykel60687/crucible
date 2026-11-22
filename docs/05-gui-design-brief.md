@@ -18,7 +18,7 @@ hundreds of preferences. The cure is discipline, not technology.
 4. **No menu deeper than one level.** No sub-sub-menus.
 5. **One settings page.** Not a tree of preference panes.
 6. **Every control is big enough to touch.** One of the three machines is a touchscreen laptop.
-7. **Keyboard first for the common actions.** Space plays and stops. A single key arms, records, splits, undoes.
+7. **Keyboard first for the common actions.** Space plays and stops. One key or one chord arms, records, splits (Ctrl+E), undoes. Full list in Settings, Keyboard.
 8. **Smooth or not at all.** Scrolling, zooming and meters hold sixty frames per second, or the
    design is simplified until they do.
 9. **Safety is visible.** Clip light, headroom, overruns and "device is resampling" are always
@@ -54,6 +54,20 @@ Top bar contents, left to right:
 - A gear for settings. An indicator for audio device state and overruns.
 
 That is the entire top bar. Anything proposed for it has to displace something.
+
+### Layout themes (D-028)
+
+People prefer different arrangements, so the same screen comes in five layouts: Studio (above),
+Compact, Touch, Side editor and Mixing. A layout only changes sizes and where the regions sit;
+every layout runs the same views. New layouts are welcome if they fit that rule. Docking and
+floating panels are not: they break principle 2 and multiply what has to be tested.
+
+### Mouse (D-027)
+
+Clicking, dragging, trimming, copying and pasting clips and notes follow the conventions most
+DAWs share, so nothing has to be learned: click selects, Shift adds, Ctrl toggles, drag moves,
+Ctrl+drag copies, edges trim, empty-space drag selects, Alt ignores the grid. Every drag previews
+on screen and becomes one command, one undo step, when the button is released.
 
 ## Visual direction
 

@@ -13,6 +13,8 @@ crucible-diagnostics = { workspace = true }
 # PLATFORM: Windows only. WASAPI exclusive mode (cpal can only do shared mode).
 [target.'cfg(windows)'.dependencies]
 wasapi = { workspace = true }
+# MMCSS "Pro Audio" thread priority (avrt.dll). Same windows-sys version crucible-diagnostics uses.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 # Only to build fake WASAPI errors in tests. Already in the tree through wasapi.
