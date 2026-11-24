@@ -11,7 +11,8 @@
 //   double-click empty    new 1-bar MIDI clip on an instrument track
 //   double-click clip     open it in the piano roll or clip editor
 //   right-click           context menu
-import { demo, PEAKS_PER_BEAT, peaksFor } from './demo'
+import { demo } from './demo'
+import { clipPeaks, levelAt } from './wave'
 import { beats, ids, PPQ, type Clip } from './engine'
 import { bpb, changed, clip, created, redraw, run, selectClips, state, ui } from './store'
 
@@ -71,7 +72,7 @@ export function snap(b: number, free = false): number {
 
 // ------------------------------------------------------------------ drag state
 type Drag =
-  | { kind: 'move'; ids: number[]; anchor: number; grab: number; x0: number; y0: number; row0: number; started: boolean; dBeats: number; dRows: number; copy: boolean; toggle: number | null }
+  | { kind: 'move'; ids: number[]; anchor: number; grab: number; x0: number; y0: number; row0: number; started: boolean; dBeats: number; dRows: number; copy: boolean; toggle: number | null; bad: boolean }
   | { kind: 'trim'; id: number; side: 'start' | 'end'; edge: number }
   | { kind: 'marquee'; x0: number; y0: number; x1: number; y1: number; additive: boolean; base: Set<number> }
   | { kind: 'scrub' }
@@ -124,7 +125,7 @@ export function draw() {
     if (isMoving) {
       drawClip(c, i, c.start / PPQ, c.length / PPQ, c.offset / PPQ, moving!.copy ? 1 : 0.28, false)
       const j = i + moving!.dRows
-      if (j >= 0 && j < tracks.length) drawClip(c, j, c.start / PPQ + moving!.dBeats, c.length / PPQ, c.offset / PPQ, 0.9, true)
+      if (j >= 0 && j < tracks.length) drawClip(c, j, c.start / PPQ + moving!.dBeats, c.length / PPQ, c.offset / PPQ, moving!.bad ? 0.45 : 0.9, true, moving!.bad)
       continue
     }
     let s = c.start / PPQ, len = c.length / PPQ, off = c.offset / PPQ
@@ -170,7 +171,7 @@ export function draw() {
 }
 
 /** One clip at a position in beats, with `offset` = how far into its content it starts. */
-function drawClip(c: Clip, row: number, start: number, len: number, offset: number, alpha: number, sel: boolean) {
+function drawClip(c: Clip, row: number, start: number, len: number, offset: number, alpha: number, sel: boolean, bad = false) {
   const t = state.project.tracks[row]
   const cx = x(start), cw = len * ui.pxPerBeat
   const y = rowTop(row) + 4, h = C.rowH - 9
@@ -180,7 +181,7 @@ function drawClip(c: Clip, row: number, start: number, len: number, offset: numb
   rr(cx + 0.5, y + 0.5, cw - 1, h, 6)
   ctx.fillStyle = col + (sel ? '40' : '2e'); ctx.fill()
   ctx.lineWidth = sel ? 2 : 1
-  ctx.strokeStyle = sel ? C.text : col + '99'; ctx.stroke()
+  ctx.strokeStyle = bad ? C.rec : sel ? C.text : col + '99'; ctx.stroke()
   ctx.save(); rr(cx + 0.5, y + 0.5, cw - 1, h, 6); ctx.clip()
   const titleH = h > 40 ? 16 : 0
   if (titleH) {
@@ -192,14 +193,11 @@ function drawClip(c: Clip, row: number, start: number, len: number, offset: numb
   ctx.fillStyle = col
   ctx.beginPath() // one path, one fill: far cheaper than a fillRect per pixel or note
   if (c.content.kind === 'audio') {
-    const peaks = peaksFor(c.content.source, c.content.source_length)
+    const pk = clipPeaks(c) // null while an imported file's peaks load: the clip draws empty for a moment
     const mid = by + bh / 2, gain = Math.pow(10, c.gain_db / 20)
-    const step = Math.max(1, Math.floor(PEAKS_PER_BEAT / ui.pxPerBeat))
-    for (let px = Math.max(cx, 0); px < Math.min(cx + cw, W); px++) {
-      const k = Math.floor(((px - cx) / ui.pxPerBeat + offset) * PEAKS_PER_BEAT)
-      let v = 0
-      for (let j = 0; j < step; j++) v = Math.max(v, peaks[k + j] ?? 0)
-      const a = Math.min(1, v * gain) * bh * 0.48
+    for (let px = Math.max(cx, 0); pk && px < Math.min(cx + cw, W); px++) {
+      const b0 = (px - cx) / ui.pxPerBeat + offset
+      const a = Math.min(1, levelAt(pk, b0, b0 + 1 / ui.pxPerBeat) * gain) * bh * 0.48
       ctx.rect(px, mid - a, 1, a * 2 || 1)
     }
   } else if (c.content.notes.length) {
@@ -232,6 +230,17 @@ export function zoom(factor: number, anchorPx = W / 2) {
   ui.pxPerBeat = Math.min(MAX_PPB, Math.max(MIN_PPB, ui.pxPerBeat * factor))
   ui.scrollX = Math.max(0, beat * ui.pxPerBeat - anchorPx)
   redraw()
+}
+
+/** Whether moving these clips by `dRows` tracks keeps every one on a track of its kind. The engine
+ *  refuses a bad drop anyway; this lets the drag show it before the button is released. */
+function dropFits(idList: number[], dRows: number): boolean {
+  const tracks = state.project.tracks
+  return idList.every((id) => {
+    const c = clip(id)
+    const t = c && tracks[tracks.findIndex((x) => x.id === c.track) + dRows]
+    return !!c && !!t && (t.kind === 'audio') === (c.content.kind === 'audio')
+  })
 }
 
 // ------------------------------------------------------------------ hit testing
@@ -295,7 +304,7 @@ cv.addEventListener('pointerdown', (e) => {
   else if (e.shiftKey) selectClips([...ui.selClips, c.id])
   else if (!ui.selClips.has(c.id)) selectClips([c.id])
   else { ui.selClip = c.id; toggle = -c.id } // already selected: collapse to it on a plain click
-  drag = { kind: 'move', ids: [...ui.selClips], anchor: c.start / PPQ, grab: beatAt(e.offsetX), x0: e.offsetX, y0: e.offsetY, row0: h.row, started: false, dBeats: 0, dRows: 0, copy: false, toggle }
+  drag = { kind: 'move', ids: [...ui.selClips], anchor: c.start / PPQ, grab: beatAt(e.offsetX), x0: e.offsetX, y0: e.offsetY, row0: h.row, started: false, dBeats: 0, dRows: 0, copy: false, toggle, bad: false }
   changed()
 })
 
@@ -323,7 +332,8 @@ cv.addEventListener('pointermove', (e) => {
   drag.dBeats = Math.max(snap(drag.anchor + raw, e.altKey) - drag.anchor, -earliest(drag.ids))
   drag.dRows = rowAt(e.offsetY) - drag.row0
   drag.copy = e.ctrlKey || e.metaKey
-  cv.style.cursor = drag.copy ? 'copy' : 'grabbing'
+  drag.bad = !dropFits(drag.ids, drag.dRows)
+  cv.style.cursor = drag.bad ? 'not-allowed' : drag.copy ? 'copy' : 'grabbing'
   redraw()
 })
 
@@ -427,6 +437,13 @@ function autoScroll(px: number) {
 }
 
 /** Where pasted clips go: the playhead, on the selected track (or the first). */
+/** The track and snapped beat under a point in page coordinates, for file drops. */
+export function dropTarget(clientX: number, clientY: number): { track: number | null; at: number } {
+  const r = cv.getBoundingClientRect()
+  const row = rowAt(clientY - r.top)
+  return { track: state.project.tracks[row]?.id ?? null, at: Math.max(0, snap(beatAt(clientX - r.left))) }
+}
+
 export function pasteTarget(): { track: number | null; at: number } {
   return { track: ui.selTrack ?? state.project.tracks[0]?.id ?? null, at: beats(Math.round(demo.pos * PPQ)) }
 }

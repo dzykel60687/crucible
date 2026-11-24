@@ -1,13 +1,15 @@
 // Crucible's window: top bar, track headers, timeline, bottom panel. Views draw from `state`
 // (the engine's truth) and change it only through `run(command)`.
 import { closeLayer, layerOpen, menu, openExport, openPluginPicker, openSettings, pathPrompt, textPrompt, type Item } from './dialogs'
-import { demo, seedPlugins, settling, tick } from './demo'
-import { beats, ids, PPQ, q, transportName, type Clip } from './engine'
+import { demo, seedPlugins, settling } from './demo'
+import { beats, ids, inTauri, PPQ, q, transportName, type Clip } from './engine'
 import { icon } from './icons'
+import { loadKinds } from './effects'
 import { cycleLayout, loadLayout } from './layout'
 import { deleteSelectedNote, drawMeters, renderPanel, renderTabs, selectTab, setCommandNames } from './panels'
-import { bpb, changed, clip, created, dragNumber, esc, fmtDb, fmtPan, onChange, redraw, run, selectClips, state, toast, track, ui, view } from './store'
-import { clampScroll, draw, follow, hooks, pasteTarget, rowH, trackColor, zoom } from './timeline'
+import { bpb, changed, clip, created, dragNumber, esc, flush, fmtDb, fmtPan, onChange, redraw, run, selectClips, state, toast, toggleMute, toggleSolo, track, ui, view } from './store'
+import { advance, device, togglePlay as transportToggle } from './transport'
+import { clampScroll, draw, dropTarget, follow, hooks, pasteTarget, rowH, trackColor, zoom } from './timeline'
 
 loadLayout()
 
@@ -61,7 +63,8 @@ function updateTop() {
   el.metro.classList.toggle('on', demo.metronome)
   el.mono.classList.toggle('on', demo.mono)
   el.ab.classList.toggle('on', demo.ab)
-  el.dev.textContent = `${p.sample_rate / 1000} kHz · 128 · ${(128 / p.sample_rate * 1000).toFixed(1)} ms`
+  el.dev.textContent = device ? `${p.sample_rate / 1000} kHz · ${device.driver} · ${device.buffer_frames} · ${device.buffer_ms.toFixed(1)} ms` : `${p.sample_rate / 1000} kHz`
+  el.dev.title = device ? device.device : 'The audio device opens when you press play. Choose it with the audio.output command.'
   el.xruns.textContent = demo.xruns ? `${demo.xruns} dropouts` : ''
   updateReadouts()
 }
@@ -185,8 +188,8 @@ function renderHeaders() {
     row.oncontextmenu = (e) => { e.preventDefault(); ui.selTrack = id; changed(); trackMenu(t, { x: e.clientX, y: e.clientY }) }
     $('.tname', row).ondblclick = () => rename(t)
     $('.r', row).onclick = (e) => { e.stopPropagation(); demo.armed.has(id) ? demo.armed.delete(id) : demo.armed.add(id); changed() }
-    $('.m', row).onclick = (e) => { e.stopPropagation(); run(`track.mute #${id}`) }
-    $('.s', row).onclick = (e) => { e.stopPropagation(); run(`track.solo #${id}`) }
+    $('.m', row).onclick = (e) => { e.stopPropagation(); toggleMute(id) }
+    $('.s', row).onclick = (e) => { e.stopPropagation(); toggleSolo(id) }
     row.querySelector<HTMLElement>('.slot')?.addEventListener('click', (e) => { e.stopPropagation(); openPluginPicker(t, 'Instrument') })
     const g = $('.gain', row), p = $('.pan', row)
     dragNumber(g, () => t.gain_db, { min: -60, max: 24, perPx: 0.25, step: 0.1, reset: 0, preview: (v) => (g.textContent = `${fmtDb(v)} dB`), commit: (v) => run(`track.gain #${id} ${+v.toFixed(1)}`) })
@@ -201,6 +204,7 @@ function trackMenu(t: { id: number; name: string }, at: { x: number; y: number }
     { label: 'Rename', kbd: 'F2', action: () => rename(t) },
     { label: 'Move up', action: () => run(`track.move #${t.id} ${i}`), disabled: i === 0 },
     { label: 'Move down', action: () => run(`track.move #${t.id} ${i + 2}`), disabled: i === n - 1 },
+    { label: 'Import audio file at playhead…', kbd: 'Ctrl+I', action: () => importPrompt(t.id, pasteTarget().at) },
     'sep',
     { label: 'Remove track', kbd: 'Ctrl+Del', danger: true, action: () => run(`track.remove #${t.id}`) },
   ])
@@ -293,9 +297,57 @@ hooks.emptyMenu = (trackId, at, pos) => {
   const t = track(trackId)
   menu(pos, [
     { label: 'Paste here', kbd: 'Ctrl+V', action: () => pasteClips(trackId, at) },
+    { label: 'Import audio file here…', kbd: 'Ctrl+I', action: () => importPrompt(trackId, at) },
     ...(t?.kind === 'instrument' ? [{ label: 'New MIDI clip here', action: () => runSelecting(`clip.add #${t.id} ${Math.floor(at / bpb()) * bpb()} ${bpb()}`) }] : []),
     { label: 'Select all clips', kbd: 'Ctrl+A', action: () => { selectClips(state.project.clips.map((c) => c.id)); changed() } },
   ])
+}
+
+// ------------------------------------------------------------------ audio import
+/** Import files and place them at `at`: the first on `trackId` if that is an audio track, every
+ *  other one on a new audio track named after its file. A project needs a folder first, because
+ *  imported audio is copied into it. */
+async function importFiles(paths: string[], trackId: number | null, at: number) {
+  if (!paths.length) return
+  if (!state.folder) {
+    toast('info', 'Save the project first', 'Imported audio is copied into the project folder, so it needs one. Choose a folder, then import again.')
+    pathPrompt('save')
+    return
+  }
+  let target = track(trackId)?.kind === 'audio' ? trackId : null
+  const made: number[] = []
+  for (const path of paths) {
+    const [imp] = await run(`audio.import ${q(path)}`)
+    if (!imp?.ok) break
+    // Never stack a file on top of audio already there: use a new track instead.
+    const p = state.project, lenBeats = imp.data.frames / ((imp.data.rate * 60) / p.tempo_bpm)
+    if (target !== null && p.clips.some((c) => c.track === target && c.start / PPQ < at + lenBeats && (c.start + c.length) / PPQ > at)) target = null
+    if (target === null) {
+      const [added] = await run(`track.add ${q(String(imp.data.source).replace(/\.\w+$/, ''))} --kind audio`)
+      if (!added?.ok) break
+      target = added.data.id
+    }
+    made.push(...created(await run(`clip.place #${target} ${at} ${q(imp.data.source)}`)))
+    target = null
+  }
+  if (made.length) { selectClips(made); changed() }
+}
+
+function importPrompt(trackId: number | null, at: number) {
+  textPrompt('Import audio: WAV, MP3 or FLAC (full path; "Copy as path" from Explorer works)', '', (v) => {
+    const path = v.trim().replace(/^"(.*)"$/, '$1')
+    if (path) importFiles([path], trackId, at)
+  })
+}
+
+// Files dropped on the window (Tauri gives real paths; a plain browser does not).
+if (inTauri) {
+  import('@tauri-apps/api/webview').then(({ getCurrentWebview }) => getCurrentWebview().onDragDropEvent((ev) => {
+    if (ev.payload.type !== 'drop') return
+    const dpr = devicePixelRatio || 1
+    const t = dropTarget(ev.payload.position.x / dpr, ev.payload.position.y / dpr)
+    importFiles(ev.payload.paths, t.track, t.at)
+  }))
 }
 
 // ------------------------------------------------------------------ panel resize
@@ -320,10 +372,8 @@ $('.resize-h', panelEl).addEventListener('pointerdown', (e) => {
 // ------------------------------------------------------------------ transport loop
 // The draw loop runs only while something moves: playing, or meters falling back after stop.
 let last = 0, looping = false
-function togglePlay() {
-  demo.playing = !demo.playing
-  if (!demo.playing) demo.recording = false
-  else { demo.peakDb = -Infinity; demo.lufs = -Infinity }
+async function togglePlay() {
+  await transportToggle()
   changed()
   startLoop()
 }
@@ -339,7 +389,7 @@ function frame(now: number) {
   const t0 = performance.now()
   const dt = Math.min(0.1, (now - last) / 1000)
   last = now
-  tick(dt, state.project.tempo_bpm, state.project.tracks, state.project.clips, state.project.master_gain_db)
+  advance(dt)
   if (demo.playing) follow()
   draw(); drawMeters(); updateReadouts()
   const ms = performance.now() - t0
@@ -347,7 +397,7 @@ function frame(now: number) {
   if (settling()) requestAnimationFrame(frame)
   else looping = false
 }
-if (import.meta.env.DEV) Object.assign(window, { __crucible: { perf, draw, drawMeters, state: () => state, ui, demo } })
+if (import.meta.env.DEV) Object.assign(window, { __crucible: { perf, draw, drawMeters, state: () => state, ui, demo, run, changed, flush, advance, togglePlay } })
 
 // ------------------------------------------------------------------ render on change
 onChange(() => {
@@ -381,6 +431,7 @@ addEventListener('keydown', (e) => {
     else if (k === 'o') { handled(); pathPrompt('open') }
     else if (k === 'n') { handled(); pathPrompt('new') }
     else if (k === 'e' && e.shiftKey) { handled(); openExport() }
+    else if (k === 'i') { handled(); const t = pasteTarget(); importPrompt(t.track, t.at) }
     else if (k === 'e') { handled(); splitClips() }
     else if (k === 'c') { handled(); copyClips() }
     else if (k === 'x') { handled(); cutClips() }
@@ -399,8 +450,8 @@ addEventListener('keydown', (e) => {
     case 'r': case 'R': el.rec.click(); break
     case 'l': case 'L': el.loop.click(); break
     case 'k': case 'K': el.metro.click(); break
-    case 'm': case 'M': if (sel) run(`track.mute #${sel}`); break
-    case 's': case 'S': if (sel) run(`track.solo #${sel}`); break
+    case 'm': case 'M': if (sel) toggleMute(sel); break
+    case 's': case 'S': if (sel) toggleSolo(sel); break
     case 'Delete': case 'Backspace':
       handled()
       if (ui.focus === 'piano' && deleteSelectedNote()) break
@@ -434,6 +485,7 @@ async function start() {
   await run('project.state', { quiet: true })
   // An empty engine gets the demo song, built by the engine itself in one undoable step.
   if (!state.project.tracks.length) await run('project.demo', { quiet: true })
+  await loadKinds()
   ui.selTrack = state.project.tracks[2]?.id ?? null
   const first = state.project.clips.find((c) => c.track === ui.selTrack)
   if (first) selectClips([first.id])

@@ -15,6 +15,10 @@
 //!   crash mid-save leaves the previous save intact.
 //! - **Validate on load.** A hand-edited or damaged file is refused with a reason, never half-used.
 //! - **Nothing machine-specific.** No device names, buffer sizes or plugin paths.
+//! - **Cheap copies.** Each clip sits behind an `Arc`, so copying the project (every undo step
+//!   does) copies pointers, not notes. Editing a clip goes through `clip_mut`, which copies that
+//!   one clip if anything else still shares it (copy-on-write). A changed clip therefore always
+//!   has a new address, which is how the engine tells a front end what changed.
 //!
 //! Portability: std file I/O only. `rename` replaces the target atomically on Windows, macOS
 //! and Linux. No OS-specific code.
@@ -24,10 +28,13 @@ use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// File format version written by this build. Bump it when a change would confuse an older build.
-/// 1: tracks only. 2: clips and notes (a format-1 file opens with no clips).
-pub const FORMAT: u32 = 2;
+/// 1: tracks only. 2: clips and notes (a format-1 file opens with no clips). 3: audio clips
+/// carry their file's length and rate (`frames`, `rate`); an older build would drop them.
+/// 4: tracks carry effects.
+pub const FORMAT: u32 = 4;
 pub const PROJECT_FILE: &str = "project.json";
 pub const JOURNAL_FILE: &str = "journal.log";
 
@@ -51,9 +58,11 @@ pub struct Project {
     /// Ids are never reused, so a command journal stays valid after deletions.
     pub next_track_id: u32,
     #[serde(default)]
-    pub clips: Vec<Clip>,
+    pub clips: Vec<Arc<Clip>>,
     #[serde(default = "first_id")]
     pub next_clip_id: u32,
+    #[serde(default = "first_id")]
+    pub next_effect_id: u32,
 }
 
 fn first_id() -> u32 {
@@ -83,9 +92,19 @@ pub struct Clip {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Content {
-    /// `source` is a file name in the project's audio folder. Until audio import exists (M2) its
-    /// length is kept in ticks; with real files it becomes a sample count.
-    Audio { source: String, source_length: i64 },
+    /// `source` is a file name in the project's `audio` folder. `frames` is that file's length in
+    /// sample frames and `rate` its sample rate; both are 0 for a placeholder with no file (demo
+    /// clips, an empty audio clip). `source_length` is the file's length in ticks at the current
+    /// tempo, so a clip's window is checked in one unit; `project.tempo` recomputes it and the
+    /// clip's offset and length, so audio keeps its real duration when the tempo changes.
+    Audio {
+        source: String,
+        source_length: i64,
+        #[serde(default)]
+        frames: u64,
+        #[serde(default)]
+        rate: u32,
+    },
     Midi { notes: Vec<Note> },
 }
 
@@ -105,6 +124,10 @@ impl Clip {
     pub fn is_audio(&self) -> bool {
         matches!(self.content, Content::Audio { .. })
     }
+    /// An audio clip backed by a real file (not a placeholder).
+    pub fn has_audio_file(&self) -> bool {
+        matches!(self.content, Content::Audio { frames, .. } if frames > 0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -117,6 +140,24 @@ pub struct Track {
     pub pan: f64,
     pub mute: bool,
     pub solo: bool,
+    /// Insert effects, processed in order before the track's gain and pan.
+    #[serde(default)]
+    pub effects: Vec<Effect>,
+}
+
+/// One insert effect on a track. `kind` names a built-in effect (`crucible-dsp`'s table); values
+/// not stored use that table's defaults, so a project only records what the user changed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Effect {
+    pub id: u32,
+    pub kind: String,
+    #[serde(default)]
+    pub bypass: bool,
+    #[serde(default)]
+    pub params: std::collections::BTreeMap<String, f64>,
+    /// IR Reverb: the impulse-response file, a name in the project's `audio` folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +189,7 @@ impl Default for Project {
             next_track_id: 1,
             clips: Vec::new(),
             next_clip_id: 1,
+            next_effect_id: 1,
         }
     }
 }
@@ -157,7 +199,7 @@ impl Project {
     pub fn add_track(&mut self, name: String, kind: TrackKind) -> u32 {
         let id = self.next_track_id;
         self.next_track_id += 1;
-        self.tracks.push(Track { id, name, kind, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
+        self.tracks.push(Track { id, name, kind, gain_db: 0.0, pan: 0.0, mute: false, solo: false, effects: Vec::new() });
         id
     }
 
@@ -169,11 +211,22 @@ impl Project {
         self.clips.iter().position(|c| c.id == id)
     }
 
+    /// Sample frames per tick at the project's tempo and rate.
+    pub fn frames_per_tick(&self) -> f64 {
+        f64::from(self.sample_rate) * 60.0 / (self.tempo_bpm * PPQ as f64)
+    }
+
+    /// The clip at `i`, for editing. Copies it first if an undo step or a front end's last view
+    /// still shares it.
+    pub fn clip_mut(&mut self, i: usize) -> &mut Clip {
+        Arc::make_mut(&mut self.clips[i])
+    }
+
     /// Add a clip with the next free id and return the id. The caller has checked it with `check_clip`.
     pub fn add_clip(&mut self, mut clip: Clip) -> u32 {
         clip.id = self.next_clip_id;
         self.next_clip_id += 1;
-        self.clips.push(clip);
+        self.clips.push(Arc::new(clip));
         self.next_clip_id - 1
     }
 
@@ -237,6 +290,15 @@ impl Project {
                 return Err(format!("track {} has an invalid gain or pan", t.id));
             }
         }
+        let mut fx_ids = std::collections::HashSet::new();
+        for (t, f) in self.tracks.iter().flat_map(|t| t.effects.iter().map(move |f| (t, f))) {
+            if !fx_ids.insert(f.id) || f.id >= self.next_effect_id {
+                return Err(format!("effect id {} on track {} is used twice or not below next_effect_id", f.id, t.id));
+            }
+            if f.params.values().any(|v| !v.is_finite()) {
+                return Err(format!("effect {} on track {} has a value that is not a number", f.id, t.id));
+            }
+        }
         let mut clip_ids = std::collections::HashSet::new();
         for c in &self.clips {
             if !clip_ids.insert(c.id) || c.id >= self.next_clip_id {
@@ -274,8 +336,12 @@ pub fn load(path: &Path) -> Result<Project, DawError> {
             format!("{} is format {format}; this build reads up to format {FORMAT}", file.display()),
         ));
     }
-    let project: Project = serde_json::from_value(value).map_err(|e| fail(e.to_string()))?;
+    let mut project: Project = serde_json::from_value(value).map_err(|e| fail(e.to_string()))?;
     project.validate().map_err(fail)?;
+    // Older files are upgraded in memory, so the next save writes this build's format number.
+    // Before 2026-11-22 the old number was written back, which would have let an older build
+    // open (and silently drop) data it does not know.
+    project.format = FORMAT;
     Ok(project)
 }
 
@@ -400,7 +466,7 @@ mod tests {
         assert_eq!(load(&dir).unwrap(), p);
 
         // An audio clip may not go on an instrument track.
-        let audio = Content::Audio { source: "x.wav".into(), source_length: 10 };
+        let audio = Content::Audio { source: "x.wav".into(), source_length: 10, frames: 0, rate: 0 };
         let bad = Clip { id: 9, track: t, name: "x".into(), start: 0, length: 10, offset: 0, gain_db: 0.0, content: audio };
         assert!(p.check_clip(&bad).unwrap_err().contains("audio clip"));
 

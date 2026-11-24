@@ -88,10 +88,11 @@ only as a labelled fallback, because it resamples and limits.
 Reason: the same project is worked on across three machines with different audio hardware
 and different MIDI keyboards.
 
-## D-011. No code is copied or ported from GPL or AGPL projects. *Proposed.*
+## D-011. No code is copied or ported from GPL or AGPL projects. *Replaced by D-036, 2026-11-23.*
 
-Reason: keeps the licence choice open. Dzyan has not decided whether the result will be open
-source. If he chooses GPL for the whole project, this can be relaxed.
+Reason at the time: it kept the licence choice open while Dzyan had not decided whether the
+result would be open source. "If he chooses GPL for the whole project, this can be relaxed."
+He did (D-036). Nothing was copied or ported while this stood.
 Clean references: Steinberg's own MIT-licensed hosting examples, and the MIT `vst3-host` crate.
 
 ## D-012. Order of work: Omnisphere test first, Tauri stress test second, then the engine. *Decided.*
@@ -287,6 +288,15 @@ animations", to evaluate the look. Built as `app/` (`crucible-app.exe`), ahead o
   the web view separately in the budget, trim it (WebView2 flags, single renderer), or take it as a
   reason for the egui fallback (D-006).
 
+*Correction 2026-11-23:* the 391 MB was the wrong measure: committed memory (private bytes),
+most of it the GPU process reserving driver memory it does not use. What Task Manager shows,
+the private working set summed over all seven processes, is **92 MB** at idle with the demo song
+(GPU process 26, browser 27, renderer 22, Crucible 5, the rest small), so the budget is met.
+Committed memory varies from 200 to 375 MB between runs with the GPU process. Tried: `--disable-gpu`
+saves only 9 MB of real memory and loses GPU compositing; `--in-process-gpu` saves 7 MB and puts
+GPU crashes in the browser process. Neither is worth it. Measured with
+`tools/measure-memory.ps1`. The budget's unit is now written down in `01-vision-and-priorities.md`.
+
 ## D-026. Bundled typefaces: Inter and JetBrains Mono. *Decided by Dzyan 2026-11-21.*
 
 "yes bundle interface types." Inter for the interface, JetBrains Mono for numbers in the console
@@ -339,6 +349,207 @@ track colours are cool and muted so the accent and the red record and clip warni
 The mark is a crucible with a sound wave cut through its body. It is drawn in `app/src/icons.ts`
 for the window and by `app/icon.py` (standard-library Python) for the app icon, from the same
 shapes. Accent swatches in Settings start with the green; the others stay as choices.
+
+## D-030. Pan law: balance, centre is unity. *Proposed by Claude 2026-11-22.*
+
+`04-audio-quality.md` rule 3 says a track at 0 dB and centre pan passes samples unchanged, so
+the pan law cannot attenuate the centre. Chosen: balance. Centre multiplies both channels by
+exactly 1.0; turning right fades the left channel with a cosine (half right: left at -3 dB) to
+silence at hard right, and the mirror for left. Nothing is ever boosted. A mono file feeds both
+sides. Tested in `crucible-engine/src/audio.rs` (`gain_and_pan_laws`).
+Rejected: constant-power -3 dB centre (breaks rule 3 and the null test), -4.5 and -6 dB centre
+laws (same). If Dzyan wants a constant-power option for mono sources later, it is a per-track
+setting, never a hidden default.
+
+## D-031. Audio clips keep real time; files are copied in; other rates are refused. *Proposed by Claude 2026-11-22.*
+
+Built overnight because Dzyan asked to test making WAV and MP3 files, mixing and exporting, and
+because the roadmap's unattended list allows the offline render path and peak generation.
+- An audio clip records its file's length in frames and its rate (project format 3). Its start,
+  length and offset stay in ticks like every clip, so editing code is shared. `project.tempo`
+  re-expresses audio windows at the new tempo: a clip stays on its beat and keeps its sound and
+  duration. `project.rate` is refused while audio at another rate is used.
+- `audio.import` copies a WAV byte for byte into `audio/`, or decodes MP3 and FLAC once into a
+  32-bit float WAV there. The same file imported twice reuses the copy; a different file with the
+  same name gets "name 2". A file at another rate is refused (E5017): no resampler yet, and rule 1
+  forbids a silent one. Waveform peaks are computed at import and cached in `audio/peaks/`.
+- `clip.place` puts an imported file on a track: an ordinary journaled edit, so crash recovery
+  replays it (the copy is already in the folder).
+- Overlapping clips on one track are summed, not "last one wins". **Decided by Dzyan
+  2026-11-23** (Q12: they "should both play"). Test: `overlapping_clips_on_one_track_both_play`.
+- Export renders offline, streaming each file in 4096-frame blocks: memory stays flat (6 MB for
+  two 10-minute tracks). `render` takes each clip's samples through a callback, so real-time
+  playback can reuse it with buffers a disk thread fills (one render path, rule 5).
+Rejected: storing audio windows in frames (two units in every edit command), loading files whole
+(321 MB for one 10-minute file, measured), resampling at import with an unreviewed converter.
+
+## D-032. The window gets change lists, not the whole project, after each command. *Proposed by Claude 2026-11-22.*
+
+Measured: on a 2,000-clip, 40,000-note project every edit cost 86 ms in the engine plus about
+200 ms through the dev bridge, because the whole 2.7 MB model went back as JSON each time, and
+undo snapshots grew memory by about 1 MB per edit (349 MB after 300 edits).
+- Each clip is held behind an `Arc` and edited copy-on-write (`Project::clip_mut`). Copying the
+  project for an undo step copies pointers. 300 edits: 14 MB.
+- The engine keeps the project it last sent and a revision number (seeded from the clock, so a
+  restarted engine never reuses one). The front end sends the revision it holds; the engine
+  replies with only the clips whose pointer changed, the id order, and the small rest. Anything
+  unexpected gets the full state. Edit round trip: 0.5 ms in the engine, about 4 ms through the
+  dev bridge.
+- The front end sends commands one at a time, in order. The window's `exec` now runs off the
+  main thread (`#[tauri::command(async)]`), so a slow command no longer freezes painting, and
+  without the queue two quick clicks could have been applied out of order (seen in the browser).
+
+## D-033. Built-in Reverb, IR Reverb, Delay and Echo. *Asked for by Dzyan 2026-11-23; CPU budget Decided, other choices Proposed.*
+
+"I do want some very effective/refined tools (not excessive amounts though) like Reverb, Delay,
+Echo ... do deep digging on what exactly makes accurate, authentic reverb ... and try to replicate
+that here." Research: `13-reverb-and-delay.md`. Built as its section 9 recommends, in a new crate
+`crucible-dsp` (plain arithmetic, no OS code):
+- **Reverb**: diffuser (4 steps over 16 channels) into a 16-line FDN with Householder feedback,
+  Jot's per-line absorption (a second-order shelf at 3 kHz: the first-order one shortened the 1 kHz
+  decay by 12%, measured), 4 slowly modulated lines, seeded early reflections. Room, Hall, Plate.
+  Decay is limited by Size (mode-density rule).
+- **IR Reverb**: zero-latency partitioned convolution (64 taps direct, then FFT blocks of 64,
+  1,024 and 8,192), mono, stereo and 4-channel true-stereo files. Normalise on: trim the silence
+  before the sound and match energy; off: the file exactly as recorded (the ReaVerb null test).
+  Length below 100% fades the tail; at 100% the IR is untouched.
+- **Delay** and **Echo**: one engine; Clean (sample-exact) and Tape (wow, flutter, darker loop,
+  soft saturation, feedback past 100% stays bounded). Tempo sync, ping-pong.
+- Effects are per-track inserts before gain and pan, stored in the project (format 4) and edited
+  only by `fx.*` commands, so they undo, journal and work from the CLI. The window draws each
+  editor from the same parameter table the engine validates against. Exports run on for the tails.
+- Coefficients and oscillators use Crucible's own `exp`, `ln`, `sin` (`crucible-dsp/src/math.rs`),
+  so the algorithmic effects, and now also every gain and pan, render the same bits on every
+  machine; the platform maths library may take different paths per CPU.
+
+The open choices in doc 13 section 9, as built (each is his to change):
+1. All four effects built. 2. Size changes restart the tail (moot until automation exists).
+3. IR files at another rate are refused, like audio (Q13). 4. IR Reverb exports may differ in the
+last bit between machines (RustFFT picks SIMD code per CPU); algorithmic effects do not.
+5. No impulse responses ship; `dist/test-audio/ir-synthetic-hall.wav` is a generated test file.
+
+Measured (release, laptop, 48 kHz, 128-frame blocks): Reverb 2.0% of one core (doc 13 proposed
+1%), Delay 0.08%, Echo 0.28% (proposed 0.2%), IR Reverb with a 3 s true-stereo IR 1.7% (proposed
+2%), but its worst block 35% of a 128-frame callback (proposed 25%) because the 8,192 block's FFT
+lands in one callback. Offline export does not care. For live playback (M2) that work moves to a
+helper thread or is spread over callbacks. Proposed: accept 2% for Reverb.
+
+**Decided by Dzyan 2026-11-23:** "I'm fine with Reverb and other effects using more CPU and Memory
+if it makes it higher quality." So the 2% for Reverb stands, and quality decides over CPU from
+here on. Nothing was changed blind on that licence: the candidates that trade CPU for quality
+(modulating all 16 lines instead of 4, oversampling the tape saturation) wait for his first
+listen, because only ears can say whether they help. Also 2026-11-23: effects go idle on the same
+sample whatever the block size (`filter.rs` `Idle`), and the convolver rejoins the same block grid
+after idling, so playback and export match bit for bit; before, the two differed below -150 dBFS.
+
+## D-034. Live playback renders ahead on a feeder thread. *Asked for by Dzyan 2026-11-23; design Proposed.*
+
+"It needs to work while testing/recording tracks, not just on export." Built before M0 passed on
+the music machines, at his request, like D-022 was. It depends on nothing M0 tests (no plugins);
+the device layer under it is the exclusive-mode stream verified on 2026-11-20.
+
+Design (`crucible-engine/src/play.rs`):
+- A **feeder thread** runs the same `audio::render` an export runs, about 40 ms ahead of the
+  listener (or three device buffers, if that is more), into a lock-free queue. It reads the clip
+  files and runs every effect. It runs at audio priority (MMCSS on Windows).
+- The **audio callback** only copies from the queue to the device. Nothing in it allocates, locks
+  or waits; a test counts its allocations.
+- An edit builds a new mixer on the command's thread and sends it over. The feeder moves the
+  running effects into it (`Mixer::inherit`): an unchanged effect moves whole, a changed one is
+  built fresh and adopts the old one's delay lines and filter history (`Effect::adopt`), so
+  reverb and echo tails survive knob moves. A changed room size or impulse response starts empty.
+- Commands: `transport.play`, `transport.stop`, `transport.seek`, `transport.status`, and
+  `audio.output` (driver, device, buffer; kept per machine beside the logs, never in a project).
+
+Why not render inside the callback, as `02-architecture.md` first said: the callback would then
+have to read disks through per-clip ring buffers, and IR Reverb's largest FFT (35% of a 128-frame
+callback, D-033) would need its own helper thread. Rendering ahead removes both problems and
+keeps one render path, so **what is heard is what an export writes, bit for bit** (tested).
+
+Cost: an edit is heard about 40 ms plus the device buffer later. That is fine for mixing and
+wrong for playing an instrument, so **live-played tracks (instruments in M3, input monitoring)
+will be rendered inside the callback** and summed with the feeder's output. REAPER does the same
+and calls it anticipative FX processing. The device's own latency is unaffected either way.
+
+Rejected: loading every audio file into memory (a 30-track song would hold gigabytes); rendering
+everything in the callback now (above).
+
+Measured on the dev laptop (release build, demo song: 4 tracks, Reverb, Echo, IR Reverb): through
+the Realtek output in exclusive mode at a 144-frame (3 ms) buffer, 36.6 s, 0 dropouts, mixing 6% of
+one core; shared mode the same. Opening the device takes place on Play and it is released on Stop.
+
+Not built: loop playback, record, metronome, scrubbing sound, a device picker in Settings (the
+`audio.output` command does it for now), holding the device open between stop and play.
+
+## D-035. ASIO is compiled into every build. *Decided by Dzyan 2026-11-23.*
+
+"We definitely want ASIO working regardless." He approved downloading the Steinberg ASIO SDK,
+LLVM and WiX the same day. The ASIO path is cpal's `asio` feature, on by default in
+`crucible-audio-io`. Since D-036 the SDK's host files are in the repo (`third-party/asiosdk`), so the only
+thing a build machine needs besides Rust is LLVM's `libclang.dll`, kept beside the repo in
+`..\crucible-sdk` (`.cargo/config.toml` points at both). Machines that run Crucible need nothing extra.
+
+Driver choice stays D-018's order: ASIO if a driver is installed, else exclusive, else shared with
+a note. One output function covers all three (`output.rs`).
+
+**Licence, settled 2026-11-23 (D-036):** Crucible is GPLv3, so the SDK is used under its GPLv3
+option. No agreement with Steinberg is needed, for private or shared builds.
+
+Not verified: any ASIO stream. The dev laptop has no ASIO driver, so only "ASIO: 0 devices" and
+the no-driver error were seen. The Lynx machine is the first real test.
+
+Found on the way and fixed: device output scaled floats by 2^23 - 1 while import divides by 2^23,
+so a 24-bit file played at unity gain lost its last bit on loud samples. Output now uses the same
+power of two as import and export, and a test checks every 16-bit value and a sweep of 24-bit
+values come back exactly.
+
+## D-036. Crucible is free software under the GNU GPL, version 3 or later. *Decided by Dzyan 2026-11-23.*
+
+"GPLv3, this can be totally open software, I don't care about trying to 'own' it." Answers Q4
+and Q5.
+
+- **Licence:** `GPL-3.0-or-later` in `Cargo.toml` and `app/package.json`. The GPLv3 text is
+  `LICENSE` at the repo root and is installed beside the program as `LICENSE.txt`. "Or later" is
+  Claude's reading of "GPLv3" (it is the FSF's own default wording); it can be changed to
+  version 3 only at any time before the first public release.
+- **ASIO:** the SDK is used under its GPLv3 option (the SDK's `LICENSE.txt` offers "the Steinberg
+  ASIO License, or alternatively ... the General Public License (GPL) Version 3"). Nothing to
+  sign. "ASIO" is still Steinberg's trademark: Crucible uses the word only to name the driver
+  type and does not use the logo.
+- **Dependencies checked the same day** (`cargo metadata` for the Windows build): 286 third-party
+  crates, 261 of them linked into the programs. Every licence is one the FSF lists as compatible
+  with GPLv3: MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0, Unicode-3.0, or a choice that includes
+  one of those. The bundled fonts are OFL and ship as separate files. The VST3 SDK is MIT.
+- **Closed plugins:** hosting them (Omnisphere, Keyscape) is unchanged. Other GPL hosts do the
+  same, and the licence binds people who receive Crucible, not its author.
+- **Replaces D-011.** Code from GPLv3-compatible projects (GPLv3, GPLv2-or-later, LGPL) may now
+  be ported when that is the better engineering. Each use is named in `10-references.md` with
+  its source and licence, and the file keeps the original notice. Still not allowed: AGPL code
+  (Zrythm, JUCE 8), GPLv2-only code, code with no licence. Check the project's licence at the
+  time, not from memory. Dependencies outside the permissive list are still raised first.
+  Nothing has been ported, and the lean rule argues for keeping it rare.
+
+**Published 2026-11-23**, at his word the same evening: "Go ahead and push it along with
+installer to public repo." Done first:
+
+1. `THIRD-PARTY-NOTICES.txt`: every third-party crate linked into the programs (261), the ASIO
+   SDK, the fonts and the JavaScript API package, with their licence texts. Generated by
+   `tools/third-party-notices.ps1`, committed, and installed beside the program. Re-run the
+   script after any dependency change.
+2. The ASIO SDK's host part is in the repo: `third-party/asiosdk`, 11 files, unchanged, under
+   the SDK's GPLv3 option, and the build uses them. The repo at a release tag is therefore the
+   whole source of that installer (GPLv3 section 6).
+   Left out on purpose: `combase.cpp`, `combase.h`, `dllentry.cpp` and `wxdebug.h`. They sit in
+   the SDK but are Microsoft sample code ("All Rights Reserved") without Steinberg's licence
+   notice. They are for writing drivers; `asio-sys` used to compile them because it compiles
+   every file in the folder. They are no longer compiled at all.
+3. Checked before publishing: every file and every commit for employer names, e-mail addresses,
+   the machine name, keys and tokens. None found.
+4. Then: commit, push, release `v0.0.1` (marked pre-release) with the installer attached, and
+   the repository's visibility set to public.
+
+Older commits say `license = "MIT"` in `Cargo.toml` and have no licence file. They stay readable
+in the history; Dzyan is their only author.
 
 ---
 

@@ -23,7 +23,7 @@ export const ui = {
 
 export let state: State = {
   project: { format: 1, name: '…', sample_rate: 48000, tempo_bpm: 120, time_signature: [4, 4], master_gain_db: 0, tracks: [], next_track_id: 1, clips: [], next_clip_id: 1 },
-  folder: null, dirty: false, undo: null, redo: null, journal: false,
+  folder: null, dirty: false, undo: null, redo: null, journal: false, revision: 0,
 }
 
 const listeners: (() => void)[] = []
@@ -34,6 +34,12 @@ export function changed() {
   if (queued) return
   queued = true
   requestAnimationFrame(() => { queued = false; for (const f of listeners) f() })
+}
+
+/** Render now, without waiting for a frame. Dev and test use only: a hidden page gets no frames. */
+export function flush() {
+  queued = false
+  for (const f of listeners) f()
 }
 
 /** Cheap path for scroll, zoom and drags: move and repaint the canvas only, no DOM rebuild. */
@@ -94,8 +100,23 @@ export function selectClips(ids: Iterable<number>) {
   ui.selClips = new Set(ids)
   const last = [...ui.selClips].at(-1)
   ui.selClip = last ?? null
-  const c = clip(last ?? null)
-  if (c) ui.selTrack = c.track
+  // The selected track is the topmost one in the selection, because paste puts the clipboard's
+  // top row there: box-select Pad and Vox, copy, paste, and they land on Pad and Vox again.
+  const order = new Map(state.project.tracks.map((t, i) => [t.id, i]))
+  const top = [...ui.selClips].map((i) => clip(i)?.track).filter((t) => t !== undefined).sort((a, b) => order.get(a)! - order.get(b)!)[0]
+  if (top !== undefined) ui.selTrack = top
+}
+
+/** Mute and solo buttons toggle. The commands set a state (`--state on|off`, default on), so
+ *  send the opposite of what the engine holds now. Sending the bare command only ever turned
+ *  them on: a muted track could not be unmuted from the window (found 2026-11-22). */
+export function toggleMute(id: number) {
+  const t = track(id)
+  if (t) run(`track.mute #${id} --state ${t.mute ? 'off' : 'on'}`)
+}
+export function toggleSolo(id: number) {
+  const t = track(id)
+  if (t) run(`track.solo #${id} --state ${t.solo ? 'off' : 'on'}`)
 }
 
 /** Ids a command reported creating (copy, paste, split), so they can be selected. */
@@ -128,7 +149,7 @@ export function dragNumber(el: HTMLElement, get: () => number, opts: { min: numb
     if (e.button !== 0) return
     e.preventDefault()
     e.stopPropagation()
-    el.setPointerCapture(e.pointerId)
+    try { el.setPointerCapture(e.pointerId) } catch { /* synthetic event: the drag still works over the element */ }
     const start = get(), y0 = e.clientY
     let v = start, moved = false
     const move = (m: PointerEvent) => {

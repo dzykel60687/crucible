@@ -26,7 +26,15 @@
     }
   },
   "bundle": {
-    "active": false,
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"]
+    "active": true,
+    "targets": ["msi"],
+    "publisher": "Crucible",
+    "category": "Music",
+    "shortDescription": "Crucible, a small digital audio workstation",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "wix": { "upgradeCode": "aa877f33-4a31-47a4-9892-5f4a6d3f2933", "language": "en-US" }
+    }
   }
 }

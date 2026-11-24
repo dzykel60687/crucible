@@ -14,9 +14,13 @@ use std::sync::Mutex;
 struct Shared(Mutex<Engine>);
 
 /// Run one line of command text (statements split by `;`). Stops at the first error, like
-/// `crucible -c`. Always returns the state afterwards so the UI can redraw from the truth.
-#[tauri::command]
-fn exec(line: String, shared: tauri::State<'_, Shared>) -> Value {
+/// `crucible -c`. Always returns the state afterwards so the UI can redraw from the truth: only
+/// the clips that changed since revision `since`, or everything if the UI holds an older one.
+///
+/// `async` puts it on Tauri's thread pool. A plain command runs on the main thread, which also
+/// runs the window, so a slow command would freeze scrolling and painting until it finished.
+#[tauri::command(async)]
+fn exec(line: String, since: Option<u64>, shared: tauri::State<'_, Shared>) -> Value {
     // A panic inside a command poisons the lock; the engine restores its own snapshot on
     // errors, so carrying on with the inner value is safe.
     let mut engine = shared.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -30,7 +34,10 @@ fn exec(line: String, shared: tauri::State<'_, Shared>) -> Value {
                     replies.push(json!({ "ok": true, "command": text, "text": help(tokens.get(1).map(String::as_str)) }));
                     continue;
                 }
-                diag::info(format!("> {text}"));
+                // The window polls transport.status many times a second while playing.
+                if tokens[0] != "transport.status" {
+                    diag::info(format!("> {text}"));
+                }
                 match engine.execute(&tokens) {
                     Ok(r) => replies.push(json!({ "ok": true, "command": text, "text": r.text, "data": r.data })),
                     Err(e) => {
@@ -42,7 +49,7 @@ fn exec(line: String, shared: tauri::State<'_, Shared>) -> Value {
             }
         }
     }
-    json!({ "replies": replies, "state": engine.state() })
+    json!({ "replies": replies, "state": engine.sync(since) })
 }
 
 fn error_json(command: &str, e: &crucible_diagnostics::DawError) -> Value {
@@ -68,10 +75,18 @@ fn help(name: Option<&str>) -> String {
 
 fn main() {
     diag::start("crucible-app", "window");
-    let result = tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(Shared(Mutex::new(Engine::new())))
         .invoke_handler(tauri::generate_handler![exec])
-        .run(tauri::generate_context!())
-        .map_err(|e| anyhow::anyhow!("window failed: {e}"));
-    std::process::exit(diag::finish(result));
+        .build(tauri::generate_context!());
+    match app {
+        // Tauri ends the process itself when the last window closes, so the log is finished on
+        // its Exit event; code after `run` never runs. Before 2026-11-22 logs had no end line.
+        Ok(app) => app.run(|_, event| {
+            if let tauri::RunEvent::Exit = event {
+                diag::finish(Ok(()));
+            }
+        }),
+        Err(e) => std::process::exit(diag::finish(Err(anyhow::anyhow!("window failed: {e}")))),
+    }
 }

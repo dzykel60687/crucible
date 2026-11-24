@@ -15,7 +15,7 @@ Throwaway code in `spikes/m0-omnisphere`. No Tauri. A plain window or console pr
 
 **Step A, machine-verifiable on the dev workstation:**
 
-- [x] Lists audio output devices. ASIO devices appear once the ASIO build feature is enabled (Q4).
+- [x] Lists audio output devices. ASIO devices are listed since 2026-11-23: the ASIO feature is on in every build (D-035).
 - [x] Lists MIDI input devices.
 - [x] Scans the standard VST3 folders and prints each plugin's name, vendor, class ID and type.
 - [x] Scanning runs in a separate process, so a plugin that crashes on load does not kill the program.
@@ -25,7 +25,8 @@ Done 2026-11-20 as `crucible diag`. Verified on the dev workstation, which has n
 
 **Step B code:** `spikes/m0-omnisphere` (`m0-play`). Untested. Checklist:
 `docs/test-reports/2026-11-20-M0-stepB-checklist.md`. Known limit: shared-mode audio only, so the
-latency item is tested through `--exclusive` (WASAPI exclusive mode). ASIO waits on Q4.
+latency item is tested through `--exclusive` (WASAPI exclusive mode). ASIO is compiled in (D-035) and
+reachable through `transport.play` and `audio.output`; `m0-play` itself still has no ASIO switch.
 
 **Step B, needs Dzyan and his hardware:**
 
@@ -52,6 +53,8 @@ plugin windows behave inside a Tauri app?
 - [x] A Tauri 2 app starts and shows the main-screen mockup from `05-gui-design-brief.md`.
   Done 2026-11-20 (D-025): `app/`, wired to the real engine, demo stand-ins for the rest.
 - [ ] A canvas timeline with five thousand synthetic clips scrolls and zooms at sixty frames per second.
+  *2026-11-22: 2,253 clips and 40,000 notes draw in 1.35 ms a frame (0.55 ms zoomed out) in
+  the browser; edits round-trip in 4 ms. Frame rate itself still needs a visible window.*
 - [ ] Thirty-two meters update sixty times a second, driven from the Rust side over the bridge.
 - [ ] A playhead moves smoothly, interpolated in the UI from engine timestamps.
 - [ ] The M0 plugin host is embedded: a plugin editor floats above the main window.
@@ -69,11 +72,17 @@ before M0 has passed.
 ## M2. Engine core
 
 - [ ] Workspace and crates as laid out in `02-architecture.md`.
-- [ ] Transport: play, stop, locate, loop.
-- [ ] Audio tracks: import, play, record, with latency-compensated recording.
-- [ ] Mixing: gain, pan, mute, solo, master.
+- [ ] Transport: play, stop, locate, loop. *Play, stop and locate built 2026-11-23 at Dzyan's
+  request, before M0 passed (D-034): `transport.*` commands, the window's play button, playhead
+  and meters. Loop not yet.*
+- [ ] Audio tracks: import, play, record, with latency-compensated recording. *Import built
+  2026-11-22 (WAV copied, MP3 and FLAC decoded once; other rates refused). Play and record not yet.*
+- [ ] Mixing: gain, pan, mute, solo, master. *Built in the offline render 2026-11-22 and tested
+  (D-030 pan law); live playback calls the same `render` since 2026-11-23 and matches the export bit for bit.*
 - [ ] Metronome and tempo.
-- [ ] Offline render to WAV through the same render path as playback.
+- [ ] Offline render to WAV through the same render path as playback. *Offline half built
+  2026-11-22: `project.export`, 16/24/32f, streaming, 420x real time on the dev laptop. Playback
+  must call the same `render`.*
 - [ ] Project save, load, autosave and crash journal. *Save, load and crash journal done 2026-11-20 (D-022); autosave not yet.*
 - [ ] All machine-checkable tests in `04-audio-quality.md` pass.
 - [ ] The command-line harness can do everything above with no UI. *Command layer and `crucible` CLI built 2026-11-20; grows with each feature.*
@@ -92,7 +101,9 @@ before M0 has passed.
 - [ ] Clip editing: split, trim, move, fade, crossfade.
 - [ ] Undo and redo across everything. *Built into the command layer from the start (2026-11-20); covers every edit command.*
 - [ ] VST3 effects as inserts on tracks and master.
-- [ ] Built-in essentials reused from `..\music-editor`, if Dzyan wants them.
+- [ ] Built-in essentials reused from `..\music-editor`, if Dzyan wants them. *Reverb, IR Reverb,
+  Delay and Echo built 2026-11-23 (D-033) as track inserts, offline export only until playback
+  exists. EQ and compressor still open (Q9).*
 
 ## M5. Quality and translation tools
 

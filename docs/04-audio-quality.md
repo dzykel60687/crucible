@@ -35,6 +35,26 @@ These need no ears, so a coding session can run them unattended.
 | No allocation | The audio callback, run under the allocation detector, allocates nothing. |
 | Round-trip format | 24-bit in, 24-bit out, no dither: identical. 32-bit float in and out: identical. |
 
+**Status 2026-11-22** (`crucible-engine/src/audio.rs` tests, run by `cargo test`): null test and
+round-trip pass for 16-bit (dither off), 24-bit and 32-bit float; determinism passes, including
+16-bit dither noise (seeded); gain law, pan law (D-030) and master gain pass with exact values;
+silence passes. "No allocation" passes since 2026-11-23: test builds count heap allocations per
+thread (`crucible-engine` `alloc_count`), and 30 blocks through `render` make none. These cover offline export only;
+nothing has been played through a device yet.
+
+### Added 2026-11-23: playback
+
+| Test | Pass condition | Status |
+|---|---|---|
+| Playback equals export | The samples the audio callback hands the driver equal a 32-bit float export of the same project, bit for bit | Pass (`play.rs` test, with Reverb and Echo on the tracks) |
+| Edits keep effects running | After a gain or pan change during playback the output equals an export of the edited project from that sample on | Pass |
+| Device conversion is exact | Every 16-bit value and a sweep of 24-bit values, as import produces them, reach the device unchanged (16, 24-in-32, 32-bit int) | Pass (`convert.rs`). Before this date output scaled by 2^n - 1 and lost the last bit of loud samples |
+| Block size does not change the sound | Effects give identical output for blocks of 1, 64, 256, 480 and 4,096 samples, including the moment they go idle after a tail | Pass. Before this date they differed below -150 dBFS near the end of a tail |
+| The callback allocates nothing | Counted | Pass |
+
+Shared mode is the exception to all of this: Windows mixes and converts the stream itself. The
+transport says so every time it has to fall back to shared mode.
+
 ## Where the sound card matters
 
 | Stage | Depends on the interface? |
@@ -109,7 +129,7 @@ Proposed, see decision D-014.
 | Format | WAV | Lossless and universal |
 | Bit depth | 24-bit | Matches the converters |
 | Sample rate | The project rate | No conversion unless asked |
-| Dither | Off for 24-bit and float, on for 16-bit | Dither only matters when reducing bit depth |
+| Dither | Off for 24-bit and float, on for 16-bit | Dither only matters when reducing bit depth. Built: TPDF, one LSB, seeded so two exports match; `--dither off` for the null test |
 | Also offered | 32-bit float WAV, FLAC | Float cannot clip. FLAC is lossless and smaller. |
 | Lossy formats | Not in version 1 | Add MP3 later behind an explicit "lossy" label |
 | Normalise | Never automatic | Hidden processing |

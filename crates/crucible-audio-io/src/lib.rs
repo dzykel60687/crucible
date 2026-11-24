@@ -13,8 +13,8 @@
 //   Linux:   ALSA, and PulseAudio / PipeWire / JACK behind cpal features
 // Windows-specific modules of this crate:
 //   - wasapi_exclusive.rs: WASAPI exclusive mode (cpal 0.18.2 only does shared mode, T2).
-//   - Still to come: ASIO streams through cpal's "asio" feature. Needs the ASIO SDK and LLVM
-//     at build time. Licence question is Q4 in docs/09-open-questions.md.
+// ASIO streams and shared-mode streams go through cpal (output.rs). The "asio" feature needs
+// the ASIO SDK and LLVM at build time, see .cargo/config.toml (D-035).
 //
 // Errors carry crucible_diagnostics codes (E2xxx), so every failure is searchable in the logs.
 
@@ -23,8 +23,30 @@ use crucible_diagnostics::DawError;
 use serde::Serialize;
 
 pub mod convert;
+mod output;
 #[cfg(windows)]
 mod wasapi_exclusive;
+
+pub use output::{Driver, Output, OutputRequest, asio_drivers, open_output};
+
+/// Raises the calling thread to audio priority until dropped. For threads that feed the audio
+/// callback and must not be held up by ordinary work.
+pub struct AudioPriority {
+    #[cfg(windows)]
+    _inner: Option<wasapi_exclusive::ProAudio>,
+}
+
+impl AudioPriority {
+    pub fn join() -> AudioPriority {
+        // PLATFORM: Windows uses MMCSS "Pro Audio". macOS: a time-constraint thread policy
+        // (thread_policy_set). Linux: SCHED_FIFO through rtkit. Both still to do; without
+        // them this does nothing there.
+        AudioPriority {
+            #[cfg(windows)]
+            _inner: wasapi_exclusive::ProAudio::join(),
+        }
+    }
+}
 
 // ---------------------------------------------------------------- exclusive mode
 //
@@ -389,9 +411,15 @@ fn build_notes() -> Vec<String> {
                 .to_string(),
         );
         notes.push(
-            "ASIO is not compiled into this build, so ASIO drivers are not listed. Their devices \
-             still appear through WASAPI. ASIO waits on open question Q4."
-                .to_string(),
+            if cfg!(feature = "asio") {
+                "ASIO is compiled into this build. Installed ASIO drivers are listed under host \
+                 ASIO; \"0 devices\" there means no ASIO driver is installed on this machine. The \
+                 same hardware also appears through WASAPI."
+            } else {
+                "ASIO is not compiled into this build, so ASIO drivers are not listed. Their \
+                 devices still appear through WASAPI."
+            }
+            .to_string(),
         );
     }
     notes

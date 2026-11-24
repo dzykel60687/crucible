@@ -29,9 +29,41 @@ decision depends on before relying on it.
 - SoundCraft, egui: https://github.com/storytold/soundcraft/wiki
 - ProWave, egui: https://github.com/fabox-os/Pro-Wave/wiki
 
-## Open-source DAWs to read for approach only (GPL, do not copy code)
+## Open-source DAWs (read for approach; nothing copied or ported so far)
 
 - Ardour. Zrythm. Tracktion Engine. JUCE's plugin host example.
+- Since D-036 (Crucible is GPLv3) code from GPLv3-compatible projects may be ported, and each
+  use is listed here with its source and licence. AGPL code (Zrythm, JUCE 8) and GPLv2-only code
+  still may not.
+
+## Crucible's own licence (D-036, 2026-11-23)
+
+- `LICENSE`: the GNU GPL version 3 text, copied unchanged from the copy Git for Windows ships
+  (`mingw64/share/licenses/gcc-libs/COPYING3`, MD5 `d32239bcb673463ab874e80d47fae504`), so
+  nothing was downloaded. Official source: https://www.gnu.org/licenses/gpl-3.0.txt
+- Compatibility list used for the dependency check: https://www.gnu.org/licenses/license-list.html
+  (from memory, not re-opened that day).
+
+## Audio file crates (added 2026-11-22)
+
+| Crate | Licence | Used for |
+|---|---|---|
+| `hound` 3.5 | Apache-2.0 | WAV read and write in `crucible-engine` (import, export, peaks). 4 GiB limit (T7) |
+| `symphonia` 0.6 (mp3, flac only) | MPL-2.0 | Decoding MP3 and FLAC once at import |
+| `realfft` 3.5 (pulls in `rustfft`) | MIT; rustfft MIT or Apache-2.0 | FFTs for IR Reverb's partitioned convolution (`crucible-dsp`) |
+
+Reverb and delay design sources are in `13-reverb-and-delay.md`.
+
+## Build-machine tools (added 2026-11-23, with Dzyan's yes)
+
+None of these ship with Crucible or are needed on machines that run it.
+
+| Tool | Licence | Used for | Where |
+|---|---|---|---|
+| Steinberg ASIO SDK 2.3.4 (2025-10-15) | Steinberg ASIO licence or GPLv3. Used under GPLv3 (D-036) | Compiled into the ASIO driver path by `asio-sys` | Host part in the repo: `third-party/asiosdk` (see its README for what was left out). The full SDK, from `steinberg.net/asiosdk`, is in `..\crucible-sdk\asio` and is no longer used by the build |
+| LLVM 23.1.6 (`libclang.dll` only is used) | Apache-2.0 with LLVM exceptions | `bindgen` reads the ASIO headers with it | `..\crucible-sdk\llvm`, unpacked from the official MSI without installing; SHA-256 matched winget's manifest |
+| WiX 3.14.1 | MS-RL | Builds the MSI | Fetched and hash-checked by Tauri's bundler into `%LOCALAPPDATA%\tauri` |
+| `asio-sys` 0.4, `bindgen` (through cpal's `asio` feature) | Apache-2.0; BSD-3-Clause | ASIO bindings | Cargo |
 
 ## Tauri
 

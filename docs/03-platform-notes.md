@@ -55,6 +55,12 @@ points back here.
 | Machine facts in log headers | `sysinfo` crate | `sysinfo` crate | `sysinfo` crate | `crucible-diagnostics/src/system.rs`. Portable |
 | UI typeface | Bundled Inter and JetBrains Mono (D-026), identical everywhere | Same files | Same files | `app/src/fonts`, `@font-face` in `app/src/style.css` |
 | Canvas drawing | Chromium Canvas 2D. `roundRect` used; WebKit has it since Safari 16 | WebKit Canvas 2D | WebKitGTK Canvas 2D; check `roundRect` and performance first | `app/src/timeline.ts`, `panels.ts` |
+| Memory measurement tool | `tools/measure-memory.ps1`: private working set over the WebView2 process tree | `footprint` or Activity Monitor per process | Sum `Pss` from `/proc/<pid>/smaps_rollup` | Test tool only, not shipped |
+| Installer | MSI built by Tauri's bundler with WiX 3 (`npx tauri build --bundles msi`) | `.dmg` / `.app` from the same bundler | `.deb` / AppImage from the same bundler | `app/src-tauri/tauri.conf.json` `bundle` section |
+| ASIO drivers (D-035) | cpal's `asio` feature, on by default. The SDK's host files are in the repo (`third-party/asiosdk`, GPLv3 option); a build machine also needs LLVM's `libclang.dll`, by default in `..\crucible-sdk` (`.cargo/config.toml`); machines that run Crucible need nothing | No ASIO: CoreAudio covers it | No ASIO: JACK / PipeWire cover it | `crucible-audio-io` feature `asio`; the feature does nothing off Windows |
+| One output function for every driver | `open_output`: ASIO and shared mode through cpal, exclusive through the `wasapi` module; order ASIO, exclusive, shared (D-018) | The cpal path alone (CoreAudio) | The cpal path alone (ALSA / PipeWire / JACK) | `crucible-audio-io/src/output.rs`. Portable |
+| Audio priority for helper threads | MMCSS "Pro Audio" (`AudioPriority::join`), used by the playback feeder | `thread_policy_set` time-constraint policy. To do | `SCHED_FIFO` through rtkit. To do | `crucible-audio-io/src/lib.rs`; does nothing off Windows yet |
+| Per-machine audio output choice | `%LOCALAPPDATA%\Crucible\audio-output.json` (beside the log folder) | `~/Library/Application Support/Crucible/` | `~/.local/share/Crucible/` | `crucible-engine/src/play.rs`, path from `crucible_diagnostics::log_dir`. Portable |
 
 ## Known future costs, recorded so they are not a surprise
 

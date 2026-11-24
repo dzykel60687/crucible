@@ -1,8 +1,8 @@
 // DEMO ONLY. Everything in this file stands in for engine features that do not exist yet
-// (transport, audio waveforms, meters, loudness, devices, plugins) so the layout can be judged by
-// eye. Clips and notes are NOT here any more: they are real engine data (clips.rs).
+// (record, loop, loudness, devices, plugins) so the layout can be judged by eye. The transport and
+// the meters are real since 2026-11-23 (transport.ts); only their values are still kept here. Clips and notes are NOT here any more: they are real engine data (clips.rs).
 // Delete this file piece by piece as M2+ lands; anything shown from here carries a "demo" tag.
-import { PPQ, type Clip, type Track } from './engine'
+import { PPQ, type Track } from './engine'
 
 export const PEAKS_PER_BEAT = 48
 
@@ -80,57 +80,6 @@ export function peaksFor(source: string, sourceTicks: number): Float32Array {
   }
   peakCache.set(key, out)
   return out
-}
-
-const dbToLin = (db: number) => Math.pow(10, db / 20)
-
-/** Advance the fake transport and fake meters by dt seconds, from the real clips. */
-export function tick(dt: number, tempo: number, tracks: Track[], clips: Clip[], masterDb: number) {
-  if (demo.playing) {
-    demo.pos += dt * tempo / 60
-    if (demo.loop && demo.pos >= demo.loopEnd) demo.pos = demo.loopStart + (demo.pos - demo.loopEnd)
-  }
-  const t0 = demo.pos * PPQ
-  const anySolo = tracks.some((t) => t.solo)
-  let sumL = 0, sumR = 0
-  const fall = Math.exp(-dt * 9)
-  for (const t of tracks) {
-    let target = 0
-    if (demo.playing && !t.mute && (!anySolo || t.solo)) {
-      const c = clips.find((c) => c.track === t.id && t0 >= c.start && t0 < c.start + c.length)
-      if (c) {
-        const inContent = t0 - c.start + c.offset
-        if (c.content.kind === 'audio') {
-          const p = peaksFor(c.content.source, c.content.source_length)
-          target = p[Math.min(p.length - 1, Math.floor((inContent / PPQ) * PEAKS_PER_BEAT))] ?? 0
-        } else {
-          const sounding = c.content.notes.filter((n) => inContent >= n.start && inContent < n.start + n.length)
-          target = sounding.length ? Math.min(1, 0.35 + 0.08 * sounding.length) * (Math.max(...sounding.map((n) => n.velocity)) / 127) : 0
-        }
-        target *= dbToLin(t.gain_db + c.gain_db) * 0.8
-      }
-    }
-    const lv = demo.levels.get(t.id) ?? { l: 0, r: 0, pl: 0, pr: 0 }
-    const l = target * Math.min(1, 1 - t.pan), r = target * Math.min(1, 1 + t.pan)
-    lv.l = Math.max(l, lv.l * fall); lv.r = Math.max(r, lv.r * fall)
-    lv.pl = Math.max(lv.l, lv.pl * Math.exp(-dt * 1.5)); lv.pr = Math.max(lv.r, lv.pr * Math.exp(-dt * 1.5))
-    demo.levels.set(t.id, lv)
-    sumL += l * 0.55; sumR += r * 0.55
-  }
-  const m = dbToLin(masterDb)
-  sumL *= m; sumR *= m
-  if (demo.mono) sumL = sumR = (sumL + sumR) / 2
-  const mv = demo.levels.get(0) ?? { l: 0, r: 0, pl: 0, pr: 0 }
-  mv.l = Math.max(sumL, mv.l * fall); mv.r = Math.max(sumR, mv.r * fall)
-  mv.pl = Math.max(mv.l, mv.pl * Math.exp(-dt * 1.5)); mv.pr = Math.max(mv.r, mv.pr * Math.exp(-dt * 1.5))
-  demo.levels.set(0, mv)
-  const peak = Math.max(mv.pl, mv.pr)
-  if (demo.playing) {
-    demo.peakDb = Math.max(demo.peakDb, 20 * Math.log10(Math.max(peak, 1e-6)))
-    if (peak >= 1) demo.clipped = true
-    const inst = 20 * Math.log10(Math.max((mv.l + mv.r) / 2, 1e-6)) - 0.7
-    if (inst > -70) demo.lufs = Number.isFinite(demo.lufs) ? demo.lufs * 0.97 + inst * 0.03 : inst
-  }
 }
 
 /** True while something on screen still moves (meters falling back). Lets the draw loop stop. */

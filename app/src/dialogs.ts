@@ -1,9 +1,9 @@
 // Menus and dialogs: project menu, track menu, settings (one page), export, plugin picker,
 // open/save. One level deep, never nested (05-gui-design-brief.md).
 import { demo, devices, plugins } from './demo'
-import { q, type Track } from './engine'
+import { PPQ, q, type Track } from './engine'
 import { icon } from './icons'
-import { changed, esc, run, selectClips, state, toast } from './store'
+import { changed, esc, run, selectClips, state, toast, ui } from './store'
 import { refreshPalette } from './timeline'
 import { applyLayout, currentLayout, LAYOUTS } from './layout'
 
@@ -35,7 +35,7 @@ export function menu(at: { x: number; y: number }, items: Item[]) {
   m.style.top = `${Math.min(at.y, innerHeight - r.height - 8)}px`
 }
 
-function dialog(title: string, html: string, opts: { wide?: boolean; footer?: string; tag?: string } = {}): HTMLElement {
+export function dialog(title: string, html: string, opts: { wide?: boolean; footer?: string; tag?: string } = {}): HTMLElement {
   closeLayer()
   const scrim = document.createElement('div')
   scrim.className = 'scrim'
@@ -107,22 +107,46 @@ export function openPluginPicker(t: Track, kind: 'Instrument' | 'Effect') {
 // ------------------------------------------------------------------ export
 export function openExport() {
   const p = state.project
+  // Ranges in beats. Loop comes from the transport stand-in; selection is the selected clips' span.
+  const sel = state.project.clips.filter((c) => ui.selClips.has(c.id))
+  const ranges: Record<string, [number, number] | null> = {
+    song: null,
+    loop: demo.loop ? [demo.loopStart, demo.loopEnd] : null,
+    selection: sel.length ? [Math.min(...sel.map((c) => c.start)) / PPQ, Math.max(...sel.map((c) => c.start + c.length)) / PPQ] : null,
+  }
+  const sep = state.folder?.includes('/') ? '/' : '\\'
+  const file = state.folder ? `${state.folder}${sep}${p.name}.wav` : ''
   const d = dialog('Export', `<div class="content">
-      <div class="row"><span>Format</span><div class="seg" data-g="fmt"><button class="on">WAV</button><button>FLAC</button><button>AIFF</button></div></div>
-      <div class="row"><span>Bit depth</span><div class="seg" data-g="bits"><button>16-bit</button><button class="on">24-bit</button><button>32-bit float</button></div></div>
-      <div class="row"><span>Sample rate</span><select class="input"><option>${p.sample_rate} Hz (project rate, no resampling)</option>${[44100, 48000, 96000].filter((r) => r !== p.sample_rate).map((r) => `<option>${r} Hz (resampled)</option>`).join('')}</select></div>
-      <div class="row"><span>Range</span><div class="seg"><button class="on">Whole song</button><button>Loop</button><button>Selection</button></div></div>
-      <div class="row"><span>Tail</span><select class="input"><option>Until silence (max 10 s)</option><option>None</option><option>2 seconds</option></select></div>
-      <div class="row"><span>Loudness</span><div class="seg"><button class="on">Untouched</button><button>Peak −1 dBTP</button><button>−14 LUFS</button></div></div>
-      <div class="row"><span>Dither</span><span style="color:var(--text-dim)" data-dither>Off: 24-bit needs none</span></div>
-      <div class="row"><span>File</span><input class="input" value="${esc(p.name)}.wav" spellcheck="false"></div>
-    </div>`, { tag: DEMO, footer: `<span class="note">Lossless and untouched by default.</span><button class="btn" data-close>Cancel</button><button class="btn primary" data-go>${icon.export} Export</button>` })
+      <div class="row"><span>Format</span><span style="color:var(--text-dim)">WAV, stereo, ${p.sample_rate} Hz (the project rate, no resampling)</span></div>
+      <div class="row"><span>Bit depth</span><div class="seg" data-g="bits"><button data-v="16">16-bit</button><button data-v="24" class="on">24-bit</button><button data-v="32f">32-bit float</button></div></div>
+      <div class="row"><span>Range</span><div class="seg" data-g="range"><button data-v="song" class="on">Whole song</button><button data-v="loop" ${ranges.loop ? '' : 'disabled title="Loop is off"'}>Loop</button><button data-v="selection" ${ranges.selection ? '' : 'disabled title="No clips selected"'}>Selection</button></div></div>
+      <div class="row"><span>Dither</span><label style="color:var(--text-dim)" data-dither>Off: 24-bit needs none</label></div>
+      <div class="row"><span>File</span><input class="input" value="${esc(file)}" placeholder="full path, e.g. C:\\Music\\Song.wav" spellcheck="false"></div>
+      <div class="row"><span></span><span style="color:var(--text-faint);font-size:var(--fs-s)">Audio clips only: MIDI is silent until instruments are hosted. Nothing is normalised or limited.</span></div>
+    </div>`, { footer: `<span class="note">Lossless and untouched by default.</span><button class="btn" data-close>Cancel</button><button class="btn primary" data-go>${icon.export} Export</button>` })
+  const pick = (g: string) => d.querySelector<HTMLElement>(`[data-g="${g}"] .on`)!.dataset.v!
+  let dither = true
+  const showDither = () => {
+    const el = d.querySelector<HTMLElement>('[data-dither]')!
+    if (pick('bits') !== '16') { el.textContent = `Off: ${pick('bits') === '24' ? '24-bit' : 'float'} needs none`; return }
+    el.innerHTML = `<input type="checkbox" ${dither ? 'checked' : ''}> TPDF dither, applied once at the end`
+    el.querySelector('input')!.onchange = (e) => { dither = (e.target as HTMLInputElement).checked }
+  }
   d.querySelectorAll<HTMLElement>('.seg').forEach((seg) => seg.querySelectorAll('button').forEach((b) => (b.onclick = () => {
     seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b))
-    if (seg.dataset.g === 'bits') d.querySelector('[data-dither]')!.textContent = b.textContent === '16-bit' ? 'TPDF, applied once at the end' : `Off: ${b.textContent} needs none`
-    if (seg.dataset.g === 'fmt') { const f = d.querySelector<HTMLInputElement>('.row:last-child input')!; f.value = f.value.replace(/\.\w+$/, '.' + b.textContent!.toLowerCase()) }
+    showDither()
   })))
-  d.querySelector<HTMLButtonElement>('[data-go]')!.onclick = () => { closeLayer(); toast('info', 'Export is not built yet', 'It arrives with the render engine (M5). This dialog shows the planned choices.') }
+  const input = d.querySelector<HTMLInputElement>('input.input')!
+  d.querySelector<HTMLButtonElement>('[data-go]')!.onclick = async () => {
+    const path = input.value.trim().replace(/^"(.*)"$/, '$1')
+    // Absolute only: C:\..., \\server\share\... or /...; a bare name would land wherever the program started.
+    if (!/^([A-Za-z]:[\\/]|\\\\|\/)/.test(path)) { input.focus(); toast('error', 'Give the full path of the file to write', 'For example C:\\Music\\Song.wav'); return }
+    const bits = pick('bits'), r = ranges[pick('range')]
+    const line = `project.export ${q(path.endsWith('.wav') ? path : path + '.wav')} --bits ${bits}${bits === '16' && !dither ? ' --dither off' : ''}${r ? ` --start ${+r[0].toFixed(6)} --end ${+r[1].toFixed(6)}` : ''}`
+    closeLayer()
+    const [rep] = await run(line)
+    if (rep?.ok) toast(rep.data.clipped ? 'error' : 'info', rep.data.clipped ? 'Exported, with clipping' : 'Exported', rep.text ?? '', rep.data.clipped ? 'W5020' : undefined)
+  }
 }
 
 // ------------------------------------------------------------------ settings: one page
@@ -138,7 +162,7 @@ export const SHORTCUTS: [string, string][] = [
   ['Copy / cut / paste clips', 'Ctrl+C / X / V'], ['Duplicate clips', 'Ctrl+D'], ['Split at playhead', 'Ctrl+E'],
   ['Delete clips (or note)', 'Del'], ['Select all clips', 'Ctrl+A'], ['Nudge clips by grid / bar', '← → / Shift'],
   ['Move clips: drag · copy: Ctrl+drag', 'mouse'], ['Trim: drag a clip edge · no snap: Alt', 'mouse'],
-  ['Add track', 'Ctrl+T'], ['Rename track', 'F2'], ['Mute / solo track', 'M / S'], ['Remove track', 'Ctrl+Del'],
+  ['Import audio (or drop files on the window)', 'Ctrl+I'], ['Add track', 'Ctrl+T'], ['Rename track', 'F2'], ['Mute / solo track', 'M / S'], ['Remove track', 'Ctrl+Del'],
   ['Select track above / below', '↑ / ↓'], ['Zoom in / out', '+ / − or Ctrl+wheel'], ['Mixer / piano roll / clip / console', '1 / 2 / 3 / `'],
   ['Show / hide panel', 'B'], ['Next layout', 'Ctrl+Shift+L'],
 ]

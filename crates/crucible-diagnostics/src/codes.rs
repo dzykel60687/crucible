@@ -85,6 +85,8 @@ codes! {
         "Use a larger buffer, close CPU-heavy programs, and use the High performance power plan.";
     ExclusiveNotApplicable = "E2012", "Exclusive mode does not exist on this system",
         "Only Windows has WASAPI exclusive mode. Other systems use their normal low-latency audio path.";
+    OutputChoiceNotSaved = "E2013", "This machine's audio output choice could not be saved",
+        "The choice is kept beside the logs, in the per-user Crucible folder. Check that the folder can be written; the message names the file.";
     AudioDriverError = "E2099", "The audio driver reported an error",
         "The log line includes the driver's own code (HRESULT on Windows). Send the log.";
     Dropout = "W2101", "The audio driver missed a deadline: an audible dropout",
@@ -159,6 +161,22 @@ codes! {
         "Copy or cut clips first with `edit.copy` or `edit.cut`.";
     NoteNotFound = "E5014", "No note matches",
         "Notes are found by pitch and start, in beats from the clip's start. `clip.notes <clip>` lists them.";
+    ProjectNotSaved = "E5015", "The project needs a folder first",
+        "Imported audio is copied into the project's folder, so save the project once (`project.save <folder>`), then import.";
+    AudioFileUnreadable = "E5016", "The audio file could not be read",
+        "Crucible reads WAV (16, 24 or 32-bit integer, or 32-bit float), MP3 and FLAC, mono or stereo. The message gives the file and the reason.";
+    SampleRateMismatch = "E5017", "The audio file's sample rate differs from the project's",
+        "Crucible does not resample yet (it never does so silently). Set the project to the file's rate with `project.rate`, or convert the file first.";
+    AudioMissing = "E5018", "An audio file the project uses is missing",
+        "The file should be in the project's `audio` folder. Copy it back there; the message names it.";
+    ExportFailed = "E5019", "The export could not be written",
+        "Check the folder exists and is writable, and that the file is not open in another program.";
+    ExportClipped = "W5020", "The export has samples above full scale",
+        "Fixed-point files cannot hold them, so they were clipped. Lower the master gain by at least the reported amount, or export 32-bit float.";
+    EffectNotFound = "E5021", "No effect in that slot",
+        "Effects are numbered from 1 on each track, top to bottom. `fx.list <track>` shows them.";
+    EffectRefused = "E5022", "That effect setting is not possible",
+        "The message says why: an unknown effect or setting, a value out of range, or an impulse-response file Crucible cannot use. `fx.kinds` lists every effect and setting.";
 
     // ---- 9: crashes and bugs
     NativeCrash = "E9001", "The program crashed",

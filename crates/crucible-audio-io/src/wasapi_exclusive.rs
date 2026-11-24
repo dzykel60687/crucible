@@ -31,7 +31,7 @@ const FORMATS: [(usize, usize, SampleType, DeviceSampleFormat, &str); 5] = [
     (32, 32, SampleType::Float, DeviceSampleFormat::F32, "32-bit float"),
     (32, 24, SampleType::Int, DeviceSampleFormat::I24In32, "24-bit int in 32"),
     (24, 24, SampleType::Int, DeviceSampleFormat::I24Packed, "24-bit int packed"),
-    (32, 32, SampleType::Int, DeviceSampleFormat::I24In32, "32-bit int"),
+    (32, 32, SampleType::Int, DeviceSampleFormat::I32, "32-bit int"),
     (16, 16, SampleType::Int, DeviceSampleFormat::I16, "16-bit int"),
 ];
 
@@ -40,10 +40,10 @@ const FORMATS: [(usize, usize, SampleType, DeviceSampleFormat, &str); 5] = [
 /// Joins the calling thread to the MMCSS "Pro Audio" class until dropped, so Windows schedules
 /// it ahead of ordinary work. Logs the outcome; call it before `mark_realtime_thread`, which
 /// silences logging on the thread.
-struct ProAudio(windows_sys::Win32::Foundation::HANDLE);
+pub(crate) struct ProAudio(windows_sys::Win32::Foundation::HANDLE);
 
 impl ProAudio {
-    fn join() -> Option<ProAudio> {
+    pub(crate) fn join() -> Option<ProAudio> {
         if std::env::var_os("CRUCIBLE_NO_MMCSS").is_some() {
             crucible_diagnostics::note("audio thread: MMCSS skipped (CRUCIBLE_NO_MMCSS is set)");
             return None;

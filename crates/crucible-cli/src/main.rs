@@ -131,7 +131,10 @@ impl Cli {
     /// Run one command from either table.
     fn exec(&mut self, tokens: &[String]) -> Result<Reply, DawError> {
         let name = alias(tokens.first().map(String::as_str).unwrap_or(""));
-        diag::info(format!("> {}", tokens.join(" ")));
+        // A window polls transport.status many times a second while playing.
+        if name != "transport.status" {
+            diag::info(format!("> {}", tokens.join(" ")));
+        }
         if let Some(spec) = command::find(HOST, name) {
             let args = command::parse(spec, &tokens[1..])?;
             return (spec.run)(self, &args);

@@ -40,12 +40,15 @@ When two of these conflict, the lower number wins. Details: `docs/01-vision-and-
    Dzyan's and are not re-argued. Entries marked *Proposed* are Claude's and still need his yes.
    New evidence against a decision gets appended to that entry and raised with him. It is not
    acted on silently.
-6. **Licence rule.** Do not copy or port code from GPL or AGPL projects (Ardour, Zrythm,
-   Tracktion Engine, JUCE). Reading them to understand an approach is fine. Dependencies should be
-   MIT, Apache-2.0, BSD, zlib or MPL. Anything else is raised first. The ASIO SDK has its own
-   open licence question, see `docs/09-open-questions.md`.
+6. **Licence rule.** Crucible is free software, `GPL-3.0-or-later` (D-036). Dependencies should be
+   MIT, Apache-2.0, BSD, zlib or MPL. Anything else is raised first. Code may be ported from
+   GPLv3-compatible projects (GPLv3, GPLv2-or-later, LGPL) when that is the better engineering:
+   record the source and licence in `docs/10-references.md` and keep the original notice. Never
+   from AGPL (Zrythm, JUCE 8), GPLv2-only or unlicensed code. The ASIO SDK is used under its
+   GPLv3 option.
 7. **Install rule.** Do not install toolchains, SDKs or plugins, and do not download anything
    outside normal `cargo` and `npm` dependency resolution, without Dzyan's yes in chat.
+   Approved so far (2026-11-23): the ASIO SDK, LLVM and WiX, on the build machine (`10-references.md`).
 8. **Git rule.** Commit only when Dzyan asks, unless `docs/STATUS.md` records a standing approval.
    Never push or create a remote without being asked.
 9. **Docs rule.** Every design doc keeps a "Platform notes" section current. If code and docs
@@ -66,6 +69,13 @@ Short, plain, honest. Result first, then the next action. No salesmanship and no
 If something is fragile or was a wrong call, say so. Hand him raw PowerShell commands to paste.
 He is new to Rust and to audio programming internals, so name the concept before the syntax.
 He is an experienced sysadmin and reads TypeScript, Python, Go and C#.
+
+**End every reply with "Your to-do and tests"** (Dzyan, 2026-11-23): everything waiting on him,
+such as hardware tests, listening checks, decisions, and yes/no answers for installs, downloads or
+commits. **Keep it very compact** (his words the same day: "very compact/condensed checklist"): one
+short line per item, a file or command only where he needs it, no explanations, ten lines at most;
+merge related items. Carry items over until he has done them. The full list lives in
+`docs/STATUS.md` under "Blockers that need Dzyan"; keep the two in step.
 
 **He asked to be caught.** When a GUI request (animation, effects, live previews) would cost frame
 time or engine time, say what it costs, measured if possible, and offer a middle ground before
@@ -89,3 +99,4 @@ He decides; record the outcome in `docs/08-decisions.md`.
 | `docs/10-references.md` | Sources, crates, reference code, licences |
 | `docs/11-error-codes.md` | Error codes, where logs go, reading a crash, exit codes |
 | `docs/12-known-daw-problems.md` | Problems other DAWs and hosts keep hitting, with sources, and what Crucible does about each. Read the relevant section before building drivers, plugins, MIDI, recording or export |
+| `docs/13-reverb-and-delay.md` | What makes reverb, delay and echo sound right, with sources; the design of the built-in effects and their tests |

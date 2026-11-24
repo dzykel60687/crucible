@@ -33,16 +33,18 @@ function engineBridge(): Plugin {
 
   // One request at a time: send the line, then project.state, and collect JSON lines until the
   // state arrives. The shell stops a line at its first error, as the window does.
-  const run = (line: string) => new Promise<object>((done) => {
+  // `since` is the revision the page holds, so only changed clips come back (Engine::sync).
+  const run = (line: string, since: string) => new Promise<object>((done) => {
     if (!child) start()
     const replies: any[] = []
     const take = (raw: string) => {
       const r = JSON.parse(raw)
-      if (r.command === 'project.state') done({ replies, state: r.data })
+      if (r.command.startsWith('project.sync')) done({ replies, state: r.data })
       else { replies.push(r); waiting.push(take) }
     }
     waiting.push(take)
-    child!.stdin.write(line.replace(/\r?\n/g, ' ') + '\nproject.state\n')
+    const sync = /^\d+$/.test(since) ? `project.sync ${since}` : 'project.sync'
+    child!.stdin.write(line.replace(/\r?\n/g, ' ') + `\n${sync}\n`)
   })
 
   return {
@@ -54,7 +56,7 @@ function engineBridge(): Plugin {
         req.on('end', () => {
           queue = queue.then(async () => {
             try {
-              const out = await run(body)
+              const out = await run(body, String(req.headers['x-crucible-since'] ?? ''))
               res.setHeader('content-type', 'application/json')
               res.end(JSON.stringify(out))
             } catch (e) {

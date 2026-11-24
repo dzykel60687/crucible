@@ -1,0 +1,11 @@
+[package]
+name = "crucible-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Crucible's built-in effects: Reverb, IR Reverb, Delay and Echo. Plain arithmetic, no OS code"
+
+[dependencies]
+# Real FFTs for the IR Reverb's partitioned convolution. MIT. Pulls in rustfft (MIT/Apache-2.0).
+realfft = "3.5"

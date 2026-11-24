@@ -57,7 +57,7 @@ Budgets, first draft, measured on the weakest machine (the laptop):
 | Startup | Main window usable in under 1 second, plugins loading afterwards |
 | Idle | Near 0% CPU when nothing plays and nothing moves |
 | GUI frame | Under 8 ms of the 16 ms frame at 60 fps, with a 5,000-clip timeline |
-| Memory | Under 150 MB for the app itself, plugins excluded |
+| Memory | Under 150 MB for the app itself, plugins excluded. Measured as Task Manager does: private working set summed over the app and its WebView2 processes (`tools/measure-memory.ps1`). 92 MB at idle on 2026-11-23 |
 | Size | `crucible.exe` under 5 MB (1.6 MB on 2026-11-20). Desktop installer under 20 MB |
 
 ## Reference targets

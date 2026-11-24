@@ -13,14 +13,16 @@ strike it here with the date.
 | ~~Q1~~ | ~~Exact Lynx and Behringer models?~~ Answered 2026-11-20: not needed, accept whatever drivers are installed. See D-018. | | |
 | Q2 | Where does development happen: this workstation, the Lynx machine, or the laptop with the Behringer? | Sets the speed of every hardware test. See `07-hardware-and-testing.md` | M0 step B |
 | Q3 | Are the other engineers on Windows or Mac? | Decides how soon the macOS port matters | Planning only |
-| Q4 | ASIO licence: accept GPLv3 for the project, or sign Steinberg's proprietary ASIO agreement? | The ASIO SDK is needed to build the ASIO path. Private use is fine either way. It matters once builds are given to other people. Also needs LLVM installed to build. Recommendation (2026-11-21): the proprietary agreement, which is free and keeps Crucible MIT; Dzyan downloads the SDK and accepts the terms himself; try WASAPI exclusive on the Lynx first. | M0 ASIO step |
-| Q5 | Will the project be open source, and under what licence? | Decides whether GPL reference code could ever be used, see D-011 | Nothing yet |
+| ~~Q4~~ | ~~ASIO licence: GPLv3, or sign Steinberg's agreement?~~ **Answered 2026-11-23: GPLv3** (D-036). The SDK is used under its GPLv3 option; nothing to sign. | | |
+| ~~Q5~~ | ~~Will the project be open source, and under what licence?~~ **Answered 2026-11-23: yes, GPLv3** (D-036): "this can be totally open software". Making the repo public is still a separate ask. | | |
 | Q6 | May a free VST3 instrument be installed on the dev machine for automated tests? Surge XT is the suggestion. | Lets a machine test plugin hosting without Omnisphere | Nice to have for M0 |
 | Q7 | Standing approval to commit (and push to `dzykel60687/crucible`) as work proceeds? | Repo created and first pushes made 2026-11-20 at his request. Per-push asks remain until he says otherwise. | Nothing, but saves round trips |
 | ~~Q11~~ | ~~Bundle the Inter typeface (OFL)?~~ **Answered 2026-11-21: yes** (D-026). | | |
 | ~~Q8~~ | ~~What should the product be called?~~ **Answered 2026-11-20: Crucible** (D-023). | | |
-| Q9 | Should the built-in EQ, compressor and reverb from `..\music-editor` be included, or should effects be VST3 only? | Scope of M4 | M4 |
-| Q10 | Confirm the *Proposed* decisions: D-005, D-011, D-013 to D-017. | So they stop being assumptions | Before M2 |
+| Q9 | Should the built-in EQ, compressor and reverb from `..\music-editor` be included, or should effects be VST3 only? **Partly answered 2026-11-23:** Dzyan wants a few very refined built-in tools, "not excessive amounts": Reverb, Delay, Echo, with reverb that is accurate and authentic (he named ReaVerb as the bar). Research: `docs/13-reverb-and-delay.md`. EQ and compressor still open. | Scope of M4 | M4 |
+| Q10 | Confirm the *Proposed* decisions: D-005, D-013 to D-017, D-030 to D-034. (D-011 was replaced by D-036; the overlapping-clips part of D-031 is decided.) | So they stop being assumptions | Before M2 |
+| ~~Q12~~ | ~~Overlapping clips on one track: sum them, or let the later one win?~~ **Answered 2026-11-23: both play** (summed, as built). | | |
+| Q13 | Files at another sample rate: keep refusing (built), or add a converter at import (the `rubato` crate, MIT) with a visible "converted from 44.1 kHz" note? | MP3s are usually 44.1 kHz; a 48 kHz project refuses them today | When he imports real material |
 
 ## B. Unverified technical claims
 
@@ -58,7 +60,7 @@ Not in scope. Listed so they are not lost and not built by accident.
 
 ## Platform notes
 
-- Q3 and Q4 both interact with the ports. A Mac user among the engineers raises the priority of
-  macOS. The ASIO question is Windows-only and disappears on the other systems.
+- Q3 interacts with the ports. A Mac user among the engineers raises the priority of macOS.
+  ASIO is Windows-only; its licence question (Q4) is settled by D-036.
 - T10 is Windows-only. T12 is macOS-only. Every other item is platform-neutral or already
   scoped to the Windows seam.

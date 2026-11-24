@@ -5,12 +5,12 @@ members = ["crates/*", "spikes/*", "app/src-tauri"]
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-license = "MIT"
+license = "GPL-3.0-or-later"
 publish = false
 
 [workspace.dependencies]
 anyhow = "1"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 cpal = "0.18"
 midir = "0.11"
@@ -26,4 +26,8 @@ crucible-diagnostics = { path = "crates/crucible-diagnostics" }
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
+opt-level = 2
+
+# DSP tests render seconds of audio sample by sample; unoptimised they take minutes.
+[profile.dev.package.crucible-dsp]
 opt-level = 2

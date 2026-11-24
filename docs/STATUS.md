@@ -2,7 +2,7 @@
 
 Update this file at the end of every session. Keep it short. Newest log entry on top.
 
-## Where things stand (as of 2026-11-21)
+## Where things stand (as of 2026-11-23)
 
 - **Phase:** M0. Step A done and verified on the dev workstation. Step B code written,
   **untested with any real plugin**, waiting on Dzyan.
@@ -10,14 +10,42 @@ Update this file at the end of every session. Keep it short. Newest log entry on
   buffer, zero dropouts, silence only). The step-B program can use it with `--exclusive`.
 - **Named Crucible** (D-023). **Command layer built** (D-022, decided): every action is a command;
   `crucible` runs them one at a time, chained, from scripts, in a shell, or as JSON. Project
-  save/load, undo/redo and crash-journal recovery work. No transport or audio in the engine yet.
+  save/load, undo/redo and crash-journal recovery work.
 - **First window built** (D-025): `app/` → `crucible-app.exe`, Tauri 2 + plain TypeScript.
   Dzyan: "GUI looks pretty good." Real engine for project, track, **clip and note** commands
   (D-027: clips moved into the model early so mouse editing is undoable and journaled). Five
-  **layout themes** (D-028). **Bundled fonts** Inter and JetBrains Mono (D-026). Transport, meters,
-  waveforms, devices, plugins and export are still demo stand-ins in `app/src/demo.ts`.
-- **Git:** private repo `github.com/dzykel60687/crucible`, branch `main`, commits under
-  `dzykel60687@users.noreply.github.com` (set in this repo only; the global email is his work one).
+  **layout themes** (D-028). **Bundled fonts** Inter and JetBrains Mono (D-026). Record, loop,
+  metronome, loudness, the device list in Settings and plugins are still demo stand-ins in
+  `app/src/demo.ts`.
+- **Audio files and offline export work** (D-031, built overnight 2026-11-22 at Dzyan's request):
+  `audio.import` (WAV copied, MP3/FLAC decoded once), `clip.place`, real waveforms (`audio.peaks`,
+  cached in `cache/peaks/`), `project.export` (16/24/32f WAV, gain, balance pan D-030, mute, solo,
+  master), all from the window too (Ctrl+I, drop files on the window, Ctrl+Shift+E). The
+  04-audio-quality machine tests pass.
+- **Live playback works, effects included** (D-034, 2026-11-23, at Dzyan's request before M0
+  passed): `transport.play/stop/seek/status`, the window's Play, playhead and meters. A feeder
+  thread renders about 40 ms ahead; the callback only copies. Playback equals the export bit for
+  bit (tested); edits during playback keep reverb and echo tails. Ran with 0 dropouts on the dev
+  laptop (exclusive, 3 ms buffer). **Not yet heard by anyone.** No record, loop or metronome.
+- **ASIO is compiled in** (D-035, decided): cpal's `asio` feature. The SDK's host files are in the repo
+  (`third-party/asiosdk`); LLVM's `libclang.dll` sits beside the repo in `..\crucible-sdk`. One `open_output` picks ASIO, else exclusive, else shared (D-018).
+  **No ASIO stream has ever run**: this laptop has no ASIO driver. The Lynx is the first test.
+- **Installer built and released**: `Crucible_0.0.1_x64_en-US.msi`, 6 MB, installs 16.8 MB (the
+  window 12.1 MB, the `crucible` tool 4.1 MB, `LICENSE.txt`, `THIRD-PARTY-NOTICES.txt`). On the
+  repo's Releases page as `v0.0.1`, a pre-release. Also in `dist/installer`. Unsigned. Unpacked
+  and checked by machine; **not yet installed on any PC** (needs administrator rights).
+- **Built-in effects** (D-033, 2026-11-23): Reverb (Room/Hall/Plate), IR Reverb (zero-latency
+  convolution with his IR files), Delay and Echo, as track inserts edited by `fx.*` commands and
+  from the mixer slots. Machine-tested (`crucible-dsp`); not yet heard. CPU budget: quality
+  wins over CPU (decided).
+- **Edits are fast on big projects** (D-032): change lists instead of the whole model, copy-on-write
+  clips, commands queued in order and run off the window's main thread.
+- **Licence: GPL-3.0-or-later** (D-036, decided 2026-11-23): "totally open software". `LICENSE` at
+  the root, installed as `LICENSE.txt`. All 286 third-party crates are GPLv3-compatible; their
+  notices are in `THIRD-PARTY-NOTICES.txt` (`tools/third-party-notices.ps1` regenerates it). The
+  ASIO SDK is used under its GPLv3 option, so nothing needs signing.
+- **Git:** **public** repo (since 2026-11-23, at his word) `github.com/dzykel60687/crucible`, branch `main`, commits under
+  `dzykel60687@users.noreply.github.com` (set in this repo only, not globally).
 - **Build philosophy recorded** (D-024): small, fast, robust; budgets in `01-vision-and-priorities.md`;
   GUI motion rules and the pushback rule in `05-gui-design-brief.md`.
 - **Diagnostics in place** (D-021, `docs/11-error-codes.md`): coded errors with help text, a
@@ -33,28 +61,53 @@ Update this file at the end of every session. Keep it short. Newest log entry on
 
 | # | Blocker | His action |
 |---|---|---|
-| 1 | **M0 step B results** | Run the checklist on the Lynx machine, send back the table and log files |
-| 2 | **The dev workstation is not a test machine.** It is a Lenovo work laptop with no ASIO interface, MIDI keyboard or VST3 plugins | Fine for now: copy `dist/m0` to the music machines. Long term, decide whether to develop on the Lynx machine |
-| 3 | **ASIO SDK and LLVM** | Needed for the ASIO path. Decide when step B passes. See `09-open-questions.md` Q4 |
-| 4 | **A free VST3 instrument on the dev machine** | Optional. Would let automated tests load a real plugin. See Q6 |
-| 5 | **GUI feel** | Try the mouse editing and the five layouts in `crucible-app.exe`; say what feels wrong |
+| 1 | **Listen: playback and effects** | `docs/test-reports/2026-11-23-devlaptop-live-playback-and-asio.md` steps 1 to 5; the effects exports in `2026-11-23-devlaptop-effects.md` |
+| 2 | **Lynx machine: ASIO and M0** | Same report steps 6 and 7 (first ever ASIO run), then `2026-11-20-M0-stepB-checklist.md` |
+| 3 | **Install the MSI on another PC** | Same report step 9. The installer is on the Releases page |
+| 4 | **"GPLv3 or later", or version 3 only?** | Claude chose "or later" (D-036). Cheap to change now, harder once others build on it |
+| 5 | **Standing approval to commit and push as work proceeds? (Q7)** | Each push is still asked for |
+| 6 | **Proposed decisions** | D-030 pan law, D-031 audio model, D-032 change lists, D-033's other choices (IR last-bit differences between machines, no IRs shipped), D-034 playback design |
+| 7 | **Open question** | Q13 sample-rate conversion at import |
+| 8 | **GUI feel** | Try and report: mouse editing, the five layouts, import, export, mute/solo, paste, piano-roll wheel. All built; his "yes to #10" on 2026-11-23 was read as "noted", not as a test result |
+| 9 | **The dev workstation is not a test machine** | Fine for now. Long term, decide whether to develop on the Lynx machine (Q2) |
+| 10 | **A free VST3 instrument on the dev machine** | Optional (Q6) |
 
 ## Next actions, in order
 
-1. Wait for Dzyan's step-B results. Fix what fails. Record results in `07-hardware-and-testing.md`
-   (plugin compatibility table) and the outcome of claim T3/T4 in `09-open-questions.md`.
-2. ~~WASAPI exclusive-mode output~~ **Done 2026-11-20** (D-020). Open follow-up: MMCSS
-   "Pro Audio" thread priority (T13).
-3. In parallel, needs no hardware: **M1 browser-only parts**, the canvas timeline and meters
-   against fake data, measured in a browser. Allowed before M0 passes; see `06-roadmap.md`.
-   Needs `npm` packages; normal dependency resolution is allowed.
-4. After step B passes: the ASIO path (needs Q4 answered), then the M1 Tauri stress prototype.
+1. Wait for Dzyan's listening and Lynx results (blockers 1 and 2). Fix what fails. Record results
+   in `07-hardware-and-testing.md` and the outcome of claims T3/T4 in `09-open-questions.md`.
+2. Playback follow-ups that need no hardware: loop playback; send effect-knob drags as they move
+   (today one command on release) with undo grouping; a real device picker in Settings (needs
+   `audio.devices` in the engine's command table); hold the device open between stop and play.
+3. After his first listen: the quality-for-CPU candidates in D-033 (modulate all 16 reverb lines,
+   oversample the tape saturation), judged by ear.
+4. Record (audio input, latency-compensated) and the metronome: M2's remaining transport work.
+5. Instruments and monitoring (M3) render inside the callback, not the feeder (D-034).
 
-Do **not** start the rest of M2 (transport, audio graph, plugins in the engine) before M0 passes on
-real hardware. The command layer and project store were built early at Dzyan's request (D-022).
-Every new feature from here starts as a command row in a table, then gets its GUI.
+6. For every later release: bump `version` in `app/src-tauri/tauri.conf.json` and `Cargo.toml`,
+   re-run `tools/third-party-notices.ps1` if dependencies changed, build the installer, tag the
+   commit `v<version>` and attach the installer to a GitHub release made from that tag (the tag
+   is the installer's source, which the GPL requires to stay available).
+
+Plugins in the engine still wait for M0 to pass on real hardware. Every new feature starts as a
+command row in a table, then gets its GUI.
 
 ## How to build and test
+
+**Build machine needs** (D-035), besides Rust and Node.js: LLVM's `libclang.dll`, by default in
+`..\crucible-sdk\llvm\LLVM\bin` beside the repo (not in git; any LLVM install works). The ASIO SDK's host files
+are in the repo, `third-party/asiosdk`. `.cargo/config.toml` points at both; the `CPAL_ASIO_DIR`
+and `LIBCLANG_PATH` environment variables override. Without libclang the build fails in
+`asio-sys`. The downloaded zips are kept in `..\crucible-sdk\downloads`.
+
+Installer (WiX is fetched by Tauri on first use): `cargo build --release -p crucible-cli`, then
+`cd app && npx tauri build --config src-tauri/tauri.bundle.json` writes
+`target/release/bundle/msi/Crucible_<version>_x64_en-US.msi`. It installs `crucible-app.exe`, and the
+`crucible.exe` command-line tool in a `tools` folder, to Program Files, adds a Start menu entry and an uninstaller, and
+installs WebView2 only if Windows lacks it. Bump `version` in `app/src-tauri/tauri.conf.json` for
+every installer you hand out, or Windows will not upgrade the old one in place. Unsigned for now:
+SmartScreen says "unknown publisher" (More info, Run anyway).
+
 
 ```bash
 cargo build --release          # binaries land in target/release
@@ -76,6 +129,14 @@ cd app && npm run dev                   # UI in a browser at :1420, driving targ
 In a browser, the dev-only Vite bridge (`app/vite.config.ts`) runs `crucible --json shell`, so the UI
 talks to the real engine. `window.__crucible.perf` holds measured frame cost in dev builds.
 
+Test audio: `dist/test-audio/make_test_audio.py` (stems, a 44.1 kHz file, a 10-minute file) and
+`to-mp3.ps1` (Windows' own MP3 encoder). `build-demo-project.crucible` there rebuilds the demo
+project and its exports: `..\m0\crucible.exe run build-demo-project.crucible`.
+
+Play from the command line: `crucible --project <folder> -c "transport.play --wait"` (add
+`--driver shared` to leave the device free for other programs). `audio.output` shows or sets this
+machine's driver, device and buffer.
+
 Try the engine without hardware: `target/debug/crucible.exe -c "project.new Demo; track.add Piano; track.list"`,
 or `crucible shell`. Add `--json` for machine-readable output.
 
@@ -86,20 +147,24 @@ After adding an error code: `cargo run -p crucible-cli -- codes --markdown` and 
 
 | Path | What | Verified how |
 |---|---|---|
-| `crates/crucible-audio-io` | SEAM 1. Lists audio devices via cpal. Exclusive mode via `wasapi`: capability probe, timing test, output stream. `convert.rs` float-to-device conversion | Ran on dev workstation. Conversion unit-tested. Exclusive stream hardware test (`cargo test -p crucible-audio-io -- --ignored`, silence) passed on Realtek |
+| `crates/crucible-audio-io` | SEAM 1. Lists audio devices via cpal. Exclusive mode via `wasapi`: capability probe, timing test, output stream. `output.rs`: one `open_output` for ASIO and shared mode (cpal) and exclusive. `convert.rs` float-to-device conversion (bit-exact with import) | Ran on dev workstation. Conversion unit-tested. Exclusive and shared streams played the demo song with 0 dropouts. **ASIO stream never run** (no driver here) |
 | `crates/crucible-midi-io` | SEAM 1. Lists MIDI inputs via midir | Ran; this machine has none |
 | `crates/crucible-plugin-host` | Finds `.vst3` bundles, probes each in a child process with a timeout. `plugin_paths` is SEAM 2 | Unit tests incl. simulated crash/hang; fake broken bundles |
 | `crates/crucible-diagnostics` | Error codes (`codes.rs`), session log (`session.rs`), machine facts (`system.rs`), Windows crash handler and minidumps (`platform_windows.rs`, the crate's only OS code) | Unit tests, including a child process that really crashes. End-to-end with a fake crashing VST3 (see session log) |
 | `crates/crucible-project` | Project model as plain data; atomic save; load with validation; crash journal | Unit tests: round trip, foreign folder refused, newer format refused, damaged file refused, journal |
-| `crates/crucible-engine` | `command.rs`: command tables, parser, canonical text form. `lib.rs`: project and track commands, undo, redo, history, journal replay | Unit tests, plus driven end to end through `crucible` (see session log) |
+| `crates/crucible-engine` | `command.rs`: command tables, parser, canonical text form. `lib.rs`: project and track commands, undo, redo, history, journal replay, `sync` change lists. `clips.rs`: clip, note, clipboard commands. `audio.rs`: import, place, peaks, mixer, `render`, export. `fx.rs`: effect commands. `play.rs`: live playback (feeder thread, queue, callback), `transport.*`, `audio.output` | Unit tests (27), CLI, browser, real devices |
+| `crates/crucible-dsp` | Built-in effects: `reverb.rs` (FDN), `convolve.rs` (IR Reverb), `delay.rs` (Delay/Echo), `filter.rs`, `math.rs` (deterministic exp/ln/sin), parameter tables in `lib.rs` | 15 unit tests (decay per band, convolution against direct, timing, no allocation, determinism, block-size independence including going idle, tail hand-over); CPU bench with `--ignored` |
 | `crates/crucible-cli` | The `crucible` binary. Host commands (help, version, codes, logs, report, diag, audio.devices, audio.test, midi.inputs, plugin.scan, run) joined with the engine's. Modes: one command, `-c`, `run`, `shell`, `--json`, `--project` | Ran on dev workstation, including each error path |
 | `app/src-tauri` | The window `crucible-app.exe`: Tauri 2 shell, one `exec` command, help for engine commands | Built release; launched |
-| `app/src` | UI: `main.ts` (top bar, headers, keys), `timeline.ts`, `panels.ts` (mixer, piano roll, clip editor, console), `dialogs.ts`, `store.ts`, `engine.ts` (the bridge), `demo.ts` (all stand-ins) | Driven in the browser pane against the real engine |
+| `app/src` | UI: `main.ts` (top bar, headers, keys, import), `timeline.ts`, `panels.ts` (mixer, piano roll, clip editor, console), `dialogs.ts` (export, settings), `effects.ts` (effect picker and editor), `store.ts`, `engine.ts` (the bridge, change-list merge, command queue), `transport.ts` (play, stop, seek, playhead and meters from `transport.status`), `wave.ts` (waveforms), `layout.ts`, `demo.ts` (stand-ins) | Driven in the browser pane against the real engine |
 | `spikes/m0-omnisphere` | THROWAWAY `m0-play`: load a plugin, editor window, live MIDI, shared or `--exclusive` output, state save/restore, offline render | Error paths only. **No real plugin yet** |
 
 ## Standing approvals
 
-None standing. 2026-11-20 Dzyan asked to push the project to his personal repo; that covered the
+None standing for commits or pushes. One-off, 2026-11-23: commit, push, make the repo public and
+publish release `v0.0.1` with the installer ("Go ahead and push it along with installer to public
+repo"). Downloads approved 2026-11-23: the ASIO SDK, LLVM and WiX
+(done, see `10-references.md`); anything else still needs his yes. 2026-11-20 Dzyan asked to push the project to his personal repo; that covered the
 first push and that session's GUI and rename work. 2026-11-22 "go ahead and push for now" covered
 the 2026-11-21 batch (mouse editing, layouts, fonts, green, research). Ask before later pushes.
 
@@ -113,7 +178,10 @@ the 2026-11-21 batch (mouse editing, layouts, fonts, green, research). Ask befor
 | Git / Node / npm | 2.53 / 24.14 / 11.9 |
 | MSVC build tools | Visual Studio Build Tools 2026, C++ toolset present |
 | WebView2 runtime | 157.x |
-| CMake, clang / LLVM | not installed |
+| CMake | not installed |
+| LLVM 23.1.6 | unpacked (not installed) in `..\crucible-sdk\llvm`, 2026-11-23 |
+| ASIO SDK 2.3.4 | host part in the repo (`third-party/asiosdk`); the full SDK is unpacked in `..\crucible-sdk\asio`, unused by the build |
+| WiX 3.14.1 | in `%LOCALAPPDATA%\tauri`, fetched by Tauri 2026-11-23 |
 | VST3 plugins | none |
 | Audio | Realtek built-in, Jabra headset (default), Thunderbolt dock. No ASIO |
 | MIDI | none |
@@ -121,6 +189,91 @@ the 2026-11-21 batch (mouse editing, layouts, fonts, green, research). Ask befor
 Related: `..\music-editor` is Dzyan's own MIT Rust audio editor with reusable DSP and loudness code.
 
 ## Session log
+
+### 2026-11-23 (evening), licence and overlapping clips (Claude Fable 5.2)
+
+- Dzyan: "GPLv3, this can be totally open software, I don't care about trying to 'own' it"
+  (D-036; answers Q4 and Q5; replaces D-011). Overlapping clips "should both play" (Q12; as
+  built; new test). "Yes to #10" (the GUI-feel checklist line): nothing to act on; those
+  features are built and wait for him to try them.
+- Added `LICENSE` (GPLv3 text from Git for Windows' own copy, nothing downloaded), set
+  `GPL-3.0-or-later` in `Cargo.toml` and `app/package.json`, README section, `LICENSE.txt` in the
+  installer. Rewrote the licence rule in `CLAUDE.md`.
+- Checked every dependency licence against GPLv3: all compatible.
+- Fixed: `audio.devices` and `diag` still printed "ASIO is not compiled into this build"; the
+  note now follows the build. `dist/m0/README.txt` said the same and is corrected.
+- Later the same evening, Dzyan: "Go ahead and push it along with installer to public repo."
+  Before publishing: `THIRD-PARTY-NOTICES.txt` and its generator; the ASIO SDK's host files
+  vendored into `third-party/asiosdk` and the build switched to them (four Microsoft sample
+  files in the SDK carry no Steinberg licence, so they are left out and no longer compiled);
+  every file and commit checked for employer names, e-mail addresses, the machine name and
+  secrets (none). Then: commit, push, release `v0.0.1` (pre-release) with the installer, repo
+  made public.
+- Rebuilt and restaged `dist/`.
+
+### 2026-11-23 (later), downloads, ASIO, live playback, installer (Claude Opus 5.5, then Fable 5.2)
+
+- Dzyan: download the ASIO SDK, LLVM and WiX; "we definitely want ASIO working regardless" (D-035);
+  fine with effects using more CPU and memory for quality (D-033 budget decided); effects must
+  work while playing and recording, not only on export (D-034); how big is the installed program;
+  keep the reply checklist very compact (`CLAUDE.md`).
+- Downloaded to `..\crucible-sdk`: ASIO SDK 2.3.4 from Steinberg, LLVM 23.1.6 from the LLVM
+  project's GitHub release (hash matched winget's manifest; unpacked with `msiexec /a`, not
+  installed). WiX came through Tauri. Nothing was installed system-wide.
+- ASIO: feature on by default, `output.rs` with one `open_output` for all three drivers. The
+  laptop has no ASIO driver, so no ASIO stream has run.
+- Live playback: `play.rs` (feeder thread, lock-free queue, callback), `transport.*` and
+  `audio.output` commands, `Effect::adopt` and `Mixer::inherit` so edits keep tails, the window's
+  Play, playhead, meters and seek (`transport.ts`; the fake transport in `demo.ts` is gone).
+- Bugs found by the new tests and fixed: effects decided when to go idle per block, so small and
+  large blocks differed below -150 dBFS; the convolver's block grid shifted after idling; device
+  output lost the last bit of loud 24-bit samples (scale 2^23 - 1 instead of 2^23).
+- MSI built: 6.0 MB, installs 16 MB. Demo exports regenerated. `dist/` restaged.
+- Verified by machine only; report `docs/test-reports/2026-11-23-devlaptop-live-playback-and-asio.md`.
+  Everything since `5845a0b` is uncommitted.
+
+### 2026-11-23, refinements, installer prep, reverb research (Claude Opus 5.5)
+
+- Dzyan: iron out known inefficiencies and memory issues; make an MSI; end every reply with his
+  to-do list (now in `CLAUDE.md`); explain the Steinberg SDK again; wants refined Reverb, Delay and
+  Echo, "very good" reverb (Q9 partly answered).
+- **Memory budget is met.** The 391 MB in D-025 was committed memory, inflated by the GPU process.
+  Task Manager's measure, summed over all WebView2 processes, is 92 MB (`tools/measure-memory.ps1`).
+- Bulk edits measured at 5,000 clips / 100,000 notes: single edits 2 to 3 ms; moving all 5,000
+  clips 0.3 s (every moved clip resends its notes). Recorded, not reworked: rare, and the fix
+  (notes behind their own pointer) can wait for a real project that needs it.
+- "No allocation" test added and passing: all 04-audio-quality machine tests now pass.
+- Installer configured (MSI via Tauri's bundler, WiX on the build machine only). Building it waits
+  for his yes to download WiX (blocker 8). Nothing is needed on users' machines beyond WebView2,
+  which Windows 11 has.
+- Reverb and delay research done (`docs/13-reverb-and-delay.md`, background agent) and built at
+  his request (D-033): new crate `crucible-dsp`, `fx.*` commands, per-track mixer, export tails,
+  mixer slots and an editor drawn from the parameter table. 14 DSP tests plus an engine test.
+  Bugs the tests caught on the way: the IR was always faded (13 dB off), a first-order damping
+  shelf shortened mid decay by 12%, idle detection cut echoes, trimming moved IR timing. CPU cut
+  by removing integer divisions from delay-line reads (2.9% to 2.0% for Reverb).
+- Found while building: the installer config would have copied the release `crucible.exe` over
+  the debug one on every build. Installer-only settings now live in `tauri.bundle.json`.
+- Demo exports regenerated, now including `overnight-mix-with-effects-24bit.wav`.
+
+### 2026-11-22, overnight test pass, audio import and export (Claude Opus 5.5)
+
+- Dzyan: "go ahead and push for now", then asked for an unattended test of the app (WAV and MP3
+  files, mixing, exporting, the GUI, latency). The 2026-11-21 batch was committed and pushed
+  (`5845a0b`). Everything below is **uncommitted**: ask before committing or pushing.
+- Full report: `docs/test-reports/2026-11-22-overnight-devlaptop-gui-and-audio.md`. Nine bugs
+  found and fixed, among them: mute and solo could not be turned off from the window; commands
+  could reach the engine out of order; every edit sent the whole project (86 ms engine, about
+  280 ms through the bridge at 2,000 clips; now 0.5 and 4 ms, D-032); paste after box select
+  went to the wrong track; piano-roll rows 4.7 px tall; the window's log had no end line.
+- Built, because the roadmap's unattended list allows the offline render path and peaks, and
+  testing "mixing, exporting" needed them: audio import/place/peaks/export (D-031, D-030),
+  streaming (6 MB peak memory with two 10-minute files), MP3 and FLAC import via `symphonia`.
+  Project format is now 3. New codes E5015 to E5019, W5020.
+- Found and recorded: MP3s without a gapless tag import 25 ms late (`12-known-daw-problems.md` F7).
+- Verified by machine only. Not heard: Dzyan listens to `dist/test-audio/exports/`.
+- Staged: `dist/m0`, `dist/app`, `dist/test-audio` (stems, MP3, a 10-minute file, a demo project,
+  three exports, the scripts that made them).
 
 ### 2026-11-21, mouse editing, layouts, fonts (Claude Opus 5.5)
 

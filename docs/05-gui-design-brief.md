@@ -69,6 +69,21 @@ DAWs share, so nothing has to be learned: click selects, Shift adds, Ctrl toggle
 Ctrl+drag copies, edges trim, empty-space drag selects, Alt ignores the grid. Every drag previews
 on screen and becomes one command, one undo step, when the button is released.
 
+Added 2026-11-22 after testing:
+- A drag that would land a clip on the wrong kind of track shows it while dragging (red outline,
+  not-allowed cursor), instead of only refusing on release.
+- The selected track after selecting clips is the topmost one, so copy and paste of a box
+  selection lands on the same tracks again.
+- Piano roll rows are never smaller than `--piano-row` (11 px, 18 px in Touch); the wheel
+  scrolls pitch. Fitting every note made rows 4.7 px tall on a laptop panel, too small to hit.
+- Effects (2026-11-23): mixer slots show each track's effects; click to edit, right-click to
+  bypass, move or remove, "+ effect" to add. The editor is drawn from the engine's parameter table
+  (`fx.kinds`): numbers drag up and down (Shift for fine, double-click for the default, click to
+  type), options are segmented buttons. One command per change, on release, like every drag.
+- Audio comes in by dropping files on the window (the track under the pointer, at the snapped
+  beat), or Ctrl+I / the right-click menus with a path. A file never lands on top of audio
+  already there; it gets its own new track.
+
 ## Visual direction
 
 - Dark theme first. Light theme later through the same design tokens.

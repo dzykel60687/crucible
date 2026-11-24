@@ -43,6 +43,7 @@
   --topbar-h: 56px;
   --header-w: 264px;
   --row-h: 72px;
+  --piano-row: 11px; /* smallest pitch row in the piano roll: big enough to hit with a mouse */
   --ruler-h: 30px;
   --panel-h: 300px;
   --tabs-h: 38px;
@@ -182,6 +183,10 @@ svg { display: block; }
 .insert { height: 20px; border-radius: 4px; border: 1px solid var(--line-strong); background: transparent; color: var(--text-dim); font-size: var(--fs-xs); padding: 0 6px; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
 .insert.filled { background: var(--surface-4); border-color: transparent; color: var(--text); }
 .insert.empty { border-style: dashed; color: var(--text-faint); text-align: center; }
+.insert.filled.off { opacity: 0.45; text-decoration: line-through; }
+.fx-editor .row { min-height: 34px; }
+.fx-editor .fxv { min-width: 96px; text-align: center; cursor: ns-resize; }
+.fx-file { display: flex; align-items: center; gap: 8px; color: var(--text-dim); }
 .insert:hover { color: var(--text); }
 .pan-knob { justify-self: center; width: 34px; height: 34px; cursor: ns-resize; touch-action: none; }
 .fader-area { display: flex; justify-content: center; gap: 8px; min-height: 0; }
@@ -309,7 +314,7 @@ svg { display: block; }
 :root[data-layout="compact"] .transport .btn { width: 34px; height: 32px; }
 :root[data-layout="compact"] .project-btn { height: 32px; font-size: 13px; }
 
-:root[data-layout="touch"] { --row-h: 96px; --topbar-h: 66px; --header-w: 300px; --panel-h: 320px; --tabs-h: 46px; --fs: 14px; }
+:root[data-layout="touch"] { --piano-row: 18px; --row-h: 96px; --topbar-h: 66px; --header-w: 300px; --panel-h: 320px; --tabs-h: 46px; --fs: 14px; }
 :root[data-layout="touch"] .btn { height: 40px; min-width: 40px; }
 :root[data-layout="touch"] .btn.icon { width: 42px; }
 :root[data-layout="touch"] .transport .btn { width: 50px; height: 46px; }

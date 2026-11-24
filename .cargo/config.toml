@@ -6,3 +6,14 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# ASIO (D-035). The ASIO driver path is compiled in through cpal's "asio" feature. It needs:
+#   - the host part of the Steinberg ASIO SDK. It is in this repo, in third-party/asiosdk, used
+#     under the SDK's GPLv3 option (D-036; see the README there).
+#   - LLVM's libclang.dll on the BUILD machine (it generates the Rust bindings), by default in
+#     ../crucible-sdk/llvm/LLVM/bin. Not in git. Machines that run Crucible need nothing extra.
+# Set the same variables in the environment to point somewhere else. To build without ASIO:
+# --no-default-features on crucible-audio-io. PLATFORM: Windows only; ignored elsewhere.
+[env]
+CPAL_ASIO_DIR = { value = "third-party/asiosdk", relative = true }
+LIBCLANG_PATH = { value = "../crucible-sdk/llvm/LLVM/bin", relative = true }

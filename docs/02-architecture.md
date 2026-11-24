@@ -49,6 +49,8 @@ crucible/
   Cargo.toml                    workspace root
   crates/
     crucible-engine/            headless core. Portable. No OS calls.
+    crucible-dsp/               built-in effects (Reverb, IR Reverb, Delay, Echo) and their
+                                parameter tables. Plain arithmetic. Portable.
     crucible-audio-io/          SEAM 1. AudioBackend trait plus one module per driver API.
     crucible-midi-io/           SEAM 1. MidiBackend trait.
     crucible-plugin-host/       VST3 hosting and scanning. SEAM 2 lives in an editor_window module.
@@ -61,7 +63,8 @@ crucible/
   app/                          the window (crucible-app.exe)
     src-tauri/                  Tauri 2 shell. One `exec` command into the engine. Adapter only.
     src/                        TypeScript UI, no framework. Canvas for timeline, piano roll, meters.
-                                demo.ts holds every stand-in for engine features not built yet.
+                                demo.ts holds every stand-in for engine features not built yet
+                                (record, loop, loudness, plugins); transport.ts is the real transport.
   spikes/
     m0-omnisphere/              throwaway test program. Deleted or archived after M0.
   docs/
@@ -76,6 +79,7 @@ Getting this wrong is the classic way audio software fails, so it is fixed up fr
 | **Main** | The OS event loop, which Tauri owns (the CLI runs its own for headless export). Plugin editor windows. **Every VST3 call except `process` and `setProcessing`:** creation, `setupProcessing`, `setActive`, bus layout, state get and set, latency queries, all controller calls. | Never blocks on the audio thread. The engine posts plugin work to a main-thread job queue that the front end drains (`12-known-daw-problems.md` P3). |
 | **Audio** | The driver callback. Runs the render graph. Calls each plugin's `process`. | The real-time rule, below. |
 | **Engine control** | Applies commands, edits the project model, builds new graph snapshots. | Hands snapshots to the audio thread by atomic swap. Never calls into a plugin itself: it asks the main thread. |
+| **Feeder** (built 2026-11-23, D-034) | Playback of everything that is not being played live: runs `audio::render`, clip files and effects included, about 40 ms ahead of the listener into a lock-free queue. | Audio priority, but not the callback: it may read disks and take bursts. The callback only copies from its queue. Tracks played live (M3) will be rendered in the callback instead. |
 | **Disk** | Record writer, clip stream reader, waveform peak builder. | Talk to the audio thread only through ring buffers. |
 | **Scanner process** | A separate executable that loads plugins to read their metadata. | If a plugin crashes during a scan, only the scanner dies. |
 
@@ -110,15 +114,17 @@ engineering cost of choosing Tauri, so what crosses and how often is fixed here.
 | Data | Direction | Rate | Form |
 |---|---|---|---|
 | User actions: play, record, move clip, change gain | UI to engine | On demand | Typed command, JSON |
-| Project state: tracks, clips, plugin lists | Engine to UI | On change | Snapshot at load, then small diffs |
+| Project state: tracks, clips, plugin lists | Engine to UI | After every command | Whole state once, then only changed clips, by revision number (D-032) |
 | Meters | Engine to UI | At most 60 per second | Small binary payload, all meters in one message |
 | Playhead | Engine to UI | About 30 per second | Position plus timestamp. The UI interpolates every frame. |
-| Waveform peaks | Engine to UI | Once per clip per zoom level | Binary min/max pairs, precomputed in Rust at several resolutions |
+| Waveform peaks | Engine to UI | Once per file per session | `audio.peaks`: loudest sample per 256 frames, one byte each, base64. Computed at import, cached in `cache/peaks/`. One resolution is enough so far (0.4 s and 150 KB for 10 minutes) |
 | Audio samples | Never crosses | | Audio stays in the engine |
 
 Rules:
 
 - The engine is the single source of truth. The UI holds a read-only mirror.
+- Commands go one at a time, in the order issued (`app/src/engine.ts`). The window runs them off
+  its main thread, so a slow command never freezes painting.
 - Undo and redo live in the engine, as a command history over the project model.
 - Command and event types are defined once in Rust and the TypeScript types are generated from
   them, so the two sides cannot drift. **(unverified: the exact tooling)**
@@ -131,6 +137,10 @@ Rules:
 - **Processing format:** 32-bit float, stereo, at the project sample rate. Proposed, see decision D-013.
 - **One render function.** Live playback and offline export run the same graph code. Export is
   that function called in a loop writing to a file. This is what makes export results trustworthy.
+  Built for audio clips (2026-11-22, `crucible-engine/src/audio.rs`): `render` mixes one block
+  and gets each clip's samples through a callback. Export's callback reads the files, streaming;
+  playback's will read buffers a disk thread keeps full, because the audio thread may not touch
+  files. Gain, balance pan (D-030), mute, solo and master are applied; MIDI is silent until M3.
 - **Sample rate:** each project has one rate. The device is opened at that rate. If a device
   cannot do it, the engine converts at the device boundary only and shows a visible warning.
 - **Buffer size:** a per-machine setting, never stored in the project.
@@ -190,7 +200,7 @@ MySong/
   project.json          human-readable, has a schema version number
   audio/                recorded and imported audio. WAV. Referenced by relative path.
   plugin-state/         one binary file per plugin instance
-  cache/peaks/          regenerable. Safe to delete.
+  cache/peaks/          regenerable waveform outlines, one per audio file. Safe to delete.
   autosave/             rolling copies of project.json
   journal.log           commands since last save, for crash recovery
 ```
@@ -198,7 +208,8 @@ MySong/
 - Saving is atomic: write a temporary file, flush it to disk, then rename it over the old one.
 - Nothing machine-specific goes in here. No device names, buffer sizes, plugin paths or window positions.
 - Machine settings live in the per-user application data folder.
-- Imported audio is copied into `audio/` by default so the folder stays self-contained.
+- Imported audio is copied into `audio/` by default so the folder stays self-contained. WAV is
+  copied byte for byte; MP3 and FLAC are decoded once into 32-bit float WAV (D-031).
 
 ## Candidate crates
 

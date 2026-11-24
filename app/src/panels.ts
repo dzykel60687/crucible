@@ -1,8 +1,10 @@
 // Bottom panel: Mixer, Piano roll, Clip editor, Console. One shown at a time.
-import { demo, PEAKS_PER_BEAT, peaksFor } from './demo'
+import { demo } from './demo'
+import { clipPeaks, levelAt } from './wave'
 import { icon } from './icons'
 import { openPluginPicker } from './dialogs'
-import { bpb, changed, clip, dragNumber, esc, fmtDb, fmtPan, run, state, ui, type Tab } from './store'
+import { effectMenu, fxLabel, openEffectEditor, openEffectPicker } from './effects'
+import { bpb, changed, clip, dragNumber, esc, fmtDb, fmtPan, run, state, toggleMute, toggleSolo, ui, type Tab } from './store'
 import { trackColor } from './timeline'
 import { beats, PPQ, q, type Clip, type Track } from './engine'
 
@@ -83,14 +85,14 @@ function strip(t: Track | null): HTMLElement {
   const el = document.createElement('div')
   el.className = 'strip' + (t ? '' : ' master') + (t && t.id === ui.selTrack ? ' sel' : '')
   el.style.setProperty('--c', t ? trackColor(t.id) : 'var(--accent)')
-  const inserts = t ? (demo.inserts.get(t.id) ?? []) : []
+  const effects = t?.effects ?? []
   const inst = t?.kind === 'instrument' ? (demo.instrument.get(t.id) ?? null) : null
   el.innerHTML = `
     <div class="sname"><i></i><span>${esc(t ? t.name : 'Master')}</span></div>
     <div class="inserts">
       ${t?.kind === 'instrument' ? `<button class="insert ${inst ? 'filled' : 'empty'}" data-slot="inst">${inst ? esc(inst) : '+ instrument'}</button>` : ''}
-      ${inserts.map((n) => `<button class="insert filled">${esc(n)}</button>`).join('')}
-      ${inserts.length < 4 ? '<button class="insert empty" data-slot="fx">+ effect</button>' : ''}
+      ${effects.map((f, i) => `<button class="insert filled ${f.bypass ? 'off' : ''}" data-fx="${i + 1}" title="${esc(fxLabel(f))}${f.bypass ? ' (bypassed)' : ''}: click to edit, right-click for more">${esc(fxLabel(f))}</button>`).join('')}
+      ${t && effects.length < 8 ? '<button class="insert empty" data-slot="fx">+ effect</button>' : ''}
     </div>
     ${t ? `<svg class="pan-knob" viewBox="0 0 34 34" title="Pan"></svg>` : '<div style="height:34px;display:grid;place-items:center;font-size:10.5px;color:var(--text-faint)">STEREO</div>'}
     <div class="fader-area">
@@ -112,16 +114,17 @@ function strip(t: Track | null): HTMLElement {
   requestAnimationFrame(() => place(gain))
   const target = t ? `track.gain #${t.id}` : 'master.gain'
   fader.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return
     e.preventDefault(); e.stopPropagation()
-    fader.setPointerCapture(e.pointerId)
+    try { fader.setPointerCapture(e.pointerId) } catch { /* synthetic event */ }
     let db = gain
     const startPos = dbToPos(gain), y0 = e.clientY, h = fader.clientHeight - 12
     const mv = (m: PointerEvent) => { db = posToDb(Math.min(1, Math.max(0, startPos + (y0 - m.clientY) / h * (m.shiftKey ? 0.1 : 1)))); place(db) }
     const up = () => {
-      fader.removeEventListener('pointermove', mv); fader.removeEventListener('pointerup', up)
+      fader.removeEventListener('pointermove', mv); fader.removeEventListener('pointerup', up); fader.removeEventListener('pointercancel', up)
       if (db !== gain) run(`${target} ${db}`)
     }
-    fader.addEventListener('pointermove', mv); fader.addEventListener('pointerup', up)
+    fader.addEventListener('pointermove', mv); fader.addEventListener('pointerup', up); fader.addEventListener('pointercancel', up)
   })
   fader.addEventListener('dblclick', () => run(`${target} 0`))
 
@@ -138,16 +141,31 @@ function strip(t: Track | null): HTMLElement {
     drawKnob(t.pan)
     let p = t.pan
     knob.addEventListener('pointerdown', (e) => {
-      e.preventDefault(); e.stopPropagation(); knob.setPointerCapture(e.pointerId)
+      if (e.button !== 0) return
+      e.preventDefault(); e.stopPropagation()
+      try { knob.setPointerCapture(e.pointerId) } catch { /* synthetic event */ }
       const y0 = e.clientY, p0 = t.pan
+      p = p0 // a plain click must not resend a value left over from an earlier drag
       const mv = (m: PointerEvent) => { p = Math.max(-1, Math.min(1, p0 + (y0 - m.clientY) / 120 * (m.shiftKey ? 0.1 : 1))); drawKnob(p) }
-      const up = () => { knob.removeEventListener('pointermove', mv); knob.removeEventListener('pointerup', up); if (p !== p0) run(`track.pan #${t.id} ${Math.round(p * 100)}`) }
-      knob.addEventListener('pointermove', mv); knob.addEventListener('pointerup', up)
+      const up = () => {
+        knob.removeEventListener('pointermove', mv); knob.removeEventListener('pointerup', up); knob.removeEventListener('pointercancel', up)
+        if (Math.round(p * 100) !== Math.round(p0 * 100)) run(`track.pan #${t.id} ${Math.round(p * 100)}`)
+      }
+      knob.addEventListener('pointermove', mv); knob.addEventListener('pointerup', up); knob.addEventListener('pointercancel', up)
     })
     knob.addEventListener('dblclick', () => run(`track.pan #${t.id} 0`))
-    el.querySelector<HTMLButtonElement>('.m')!.onclick = (e) => { e.stopPropagation(); run(`track.mute #${t.id}`) }
-    el.querySelector<HTMLButtonElement>('.s')!.onclick = (e) => { e.stopPropagation(); run(`track.solo #${t.id}`) }
-    el.querySelectorAll<HTMLButtonElement>('.insert').forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openPluginPicker(t, b.dataset.slot === 'inst' ? 'Instrument' : 'Effect') }))
+    el.querySelector<HTMLButtonElement>('.m')!.onclick = (e) => { e.stopPropagation(); toggleMute(t.id) }
+    el.querySelector<HTMLButtonElement>('.s')!.onclick = (e) => { e.stopPropagation(); toggleSolo(t.id) }
+    el.querySelectorAll<HTMLButtonElement>('.insert').forEach((b) => {
+      const slot = Number(b.dataset.fx)
+      b.onclick = (e) => {
+        e.stopPropagation()
+        if (slot) openEffectEditor(t.id, slot)
+        else if (b.dataset.slot === 'fx') openEffectPicker(t)
+        else openPluginPicker(t, 'Instrument')
+      }
+      if (slot) b.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); effectMenu(t, slot, { x: e.clientX, y: e.clientY }) }
+    })
   } else {
     el.querySelector<HTMLButtonElement>('.m')!.onclick = () => { demo.mono = !demo.mono; changed() }
   }
@@ -194,6 +212,8 @@ let pianoTool: 'select' | 'draw' = 'select'
 let pianoGrid = 0.25
 /** Selected note, by content-relative start tick and pitch (indices change after every command). */
 let selNote: { clip: number; pitch: number; start: number } | null = null
+/** Highest pitch shown in each clip's piano roll, once the wheel has scrolled it. */
+const pitchTop = new Map<number, number>()
 const GRIDS: [string, number][] = [['1/16', 0.25], ['1/8', 0.5], ['1/4', 1], ['Off', 0]]
 
 function midiClip(): Clip | undefined {
@@ -222,7 +242,7 @@ function piano(view: HTMLElement) {
       <div class="seg"><button data-t="select" class="${pianoTool === 'select' ? 'on' : ''}" title="Select and move (V)">${sm(icon.pointer)}</button><button data-t="draw" class="${pianoTool === 'draw' ? 'on' : ''}" title="Draw notes (D)">${sm(icon.pencil)}</button></div>
       <div class="seg" data-grid>${GRIDS.map(([l, g]) => `<button data-g="${g}" class="${g === pianoGrid ? 'on' : ''}">${l}</button>`).join('')}</div>
       <button class="btn solid quant" ${c ? '' : 'disabled'}>Quantize</button>
-      <span class="muted">${c ? `${notes.length} notes · ${+(c.length / PPQ / bpb()).toFixed(2)} bars · drag to move, drag the end to resize, double-click to delete` : ''}</span>
+      <span class="muted">${c ? `${notes.length} notes · ${+(c.length / PPQ / bpb()).toFixed(2)} bars · drag to move, drag the end to resize, double-click to delete, wheel scrolls pitch` : ''}</span>
     </div>
     ${c ? '<canvas tabindex="0"></canvas>' : '<div class="empty-note">No MIDI clip selected.<br>Double-click a MIDI clip in the timeline, or double-click empty space on an instrument track to make one.</div>'}
   </div>`
@@ -234,16 +254,27 @@ function piano(view: HTMLElement) {
   const KEYS = 52, RUL = 22, VEL = 54
   const off = c.offset, len = c.length
   const visible = notes.filter((n) => n.start + n.length > off && n.start < off + len)
-  let lo = 127, hi = 0
-  for (const n of visible) { lo = Math.min(lo, n.pitch); hi = Math.max(hi, n.pitch) }
-  if (!visible.length) { lo = 54; hi = 72 }
-  const mid = (lo + hi) / 2, half = Math.max(12, (hi - lo) / 2 + 5)
-  lo = Math.max(0, Math.floor(mid - half)); hi = Math.min(127, Math.ceil(mid + half))
+  // Pitch window: as many rows as fit at --piano-row or taller, centred on the notes until the
+  // wheel scrolls it. Squeezing every note in made rows 4 px tall on a laptop, too small to hit.
+  let nLo = 127, nHi = 0
+  for (const n of visible) { nLo = Math.min(nLo, n.pitch); nHi = Math.max(nHi, n.pitch) }
+  const centre = visible.length ? (nLo + nHi) / 2 : 60
+  const minRow = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--piano-row')) || 11
+  let lo = 0, hi = 127
   const font = getComputedStyle(document.documentElement).getPropertyValue('--mono').trim()
   const g = () => {
     const w = cv.clientWidth, h = cv.clientHeight
-    return { w, h, rowH: (h - RUL - VEL) / (hi - lo + 1), ppb: (w - KEYS) / (len / PPQ) }
+    const rows = Math.max(1, Math.min(128, Math.floor((h - RUL - VEL) / minRow)))
+    hi = Math.max(rows - 1, Math.min(127, pitchTop.get(c.id) ?? Math.round(centre + rows / 2)))
+    lo = hi - rows + 1
+    return { w, h, rowH: (h - RUL - VEL) / rows, ppb: (w - KEYS) / (len / PPQ) }
   }
+  cv.addEventListener('wheel', (e) => {
+    e.preventDefault()
+    g()
+    pitchTop.set(c.id, hi - Math.sign(e.deltaY) * 3) // three semitones a notch; g() clamps
+    drawRoll()
+  }, { passive: false })
   const snapB = (b: number, free: boolean) => (free || !pianoGrid ? Math.round(b * 64) / 64 : Math.round(b / pianoGrid) * pianoGrid)
   // live preview of a drag: which note, and where it would go
   let preview: { pitch: number; start: number; length: number; velocity: number } | null = null
@@ -322,14 +353,15 @@ function piano(view: HTMLElement) {
       const setV = (py: number) => { preview = { ...n, velocity: Math.max(1, Math.min(127, Math.round(((h - 4 - py) / (VEL - 10)) * 127))) }; drawRoll() }
       setV(e.offsetY)
       const mv = (m: PointerEvent) => setV(m.offsetY)
-      const up = () => {
-        cv.removeEventListener('pointermove', mv); cv.removeEventListener('pointerup', up)
+      const end = (commit: boolean) => {
+        cv.removeEventListener('pointermove', mv); cv.removeEventListener('pointerup', up); cv.removeEventListener('pointercancel', cancel)
         const v = preview?.velocity
         preview = previewOf = null
-        if (v && v !== n.velocity) run(`note.edit #${c.id} ${n.pitch} ${rel(n.start)} --velocity ${v}`)
+        if (commit && v && v !== n.velocity) run(`note.edit #${c.id} ${n.pitch} ${rel(n.start)} --velocity ${v}`)
         else drawRoll()
       }
-      cv.addEventListener('pointermove', mv); cv.addEventListener('pointerup', up)
+      const up = () => end(true), cancel = () => end(false)
+      cv.addEventListener('pointermove', mv); cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', cancel)
       return
     }
     if (e.offsetY < RUL) return
@@ -362,11 +394,11 @@ function piano(view: HTMLElement) {
       }
       drawRoll()
     }
-    const up = () => {
-      cv.removeEventListener('pointermove', mv); cv.removeEventListener('pointerup', up)
+    const end = (commit: boolean) => {
+      cv.removeEventListener('pointermove', mv); cv.removeEventListener('pointerup', up); cv.removeEventListener('pointercancel', cancel)
       const p = preview
       preview = previewOf = null
-      if (!moved || !p) { drawRoll(); return }
+      if (!commit || !moved || !p) { drawRoll(); return }
       const args: string[] = []
       if (p.pitch !== n.pitch) args.push(`--to-pitch ${p.pitch}`)
       if (p.start !== n.start) args.push(`--to-start ${rel(p.start)}`)
@@ -375,7 +407,8 @@ function piano(view: HTMLElement) {
       selNote = { clip: c.id, pitch: p.pitch, start: p.start }
       run(`note.edit #${c.id} ${n.pitch} ${rel(n.start)} ${args.join(' ')}`)
     }
-    cv.addEventListener('pointermove', mv); cv.addEventListener('pointerup', up)
+    const up = () => end(true), cancel = () => end(false)
+    cv.addEventListener('pointermove', mv); cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', cancel)
   })
   cv.addEventListener('dblclick', (e) => {
     const hitN = noteAt(e.offsetX, e.offsetY)
@@ -397,7 +430,7 @@ function clipEditor(view: HTMLElement) {
   view.innerHTML = `<div class="editor">
     <div class="toolbar"><span class="title">${c ? esc(c.name) : 'Clip editor'}</span>
       ${c ? `<button class="btn solid" data-split title="Split at the playhead (Ctrl+E)">Split at playhead</button><button class="btn" data-del title="Delete (Del)">Delete</button>` : ''}
-      <span class="muted">${src ? `${esc(src.source)} <span class="tag demo">demo audio</span>` : ''}</span></div>
+      <span class="muted">${src ? (src.frames ? `${esc(src.source)} · ${src.rate / 1000} kHz · ${(src.frames / src.rate).toFixed(2)} s` : `${esc(src.source)} <span class="tag demo">demo audio</span>`) : ''}</span></div>
     ${c && src ? `<div class="split"><canvas></canvas><div class="props">
       <label>Name <span class="val name-edit" title="Click to rename">${esc(c.name)}</span></label>
       <label>Start <span class="val">${pos(c.start)}</span></label>
@@ -431,16 +464,14 @@ function clipEditor(view: HTMLElement) {
     const k = cv.getContext('2d')!
     k.setTransform(dpr, 0, 0, dpr, 0, 0)
     k.fillStyle = '#0e1014'; k.fillRect(0, 0, w, h)
-    const col = trackColor(c.track), peaks = peaksFor(src.source, src.source_length)
+    const col = trackColor(c.track), pk = clipPeaks(c)
     const mid = h / 2, lenB = c.length / PPQ, offB = c.offset / PPQ, gain = Math.pow(10, gainDb / 20)
     k.fillStyle = '#262b36'; k.fillRect(0, mid, w, 1)
     for (let b = 0; b <= lenB; b++) { k.fillStyle = (b + c.start / PPQ) % per === 0 ? '#343b4a' : '#1c2029'; k.fillRect(Math.round((b / lenB) * w), 0, 1, h) }
     k.fillStyle = col
     k.beginPath()
-    for (let px = 0; px < w; px++) {
-      const k0 = Math.floor((offB + (px / w) * lenB) * PEAKS_PER_BEAT), k1 = Math.max(k0 + 1, Math.floor((offB + ((px + 1) / w) * lenB) * PEAKS_PER_BEAT))
-      let v = 0
-      for (let j = k0; j < k1; j++) v = Math.max(v, peaks[j] ?? 0)
+    for (let px = 0; pk && px < w; px++) {
+      const v = levelAt(pk, offB + (px / w) * lenB, offB + ((px + 1) / w) * lenB)
       const a = Math.min(1, v * gain) * (h / 2 - 12)
       k.rect(px, mid - a, 1, a * 2 || 1)
     }

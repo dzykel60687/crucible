@@ -17,16 +17,68 @@
 //!
 //! Portability: no OS-specific code, no UI or Tauri dependency.
 
+mod audio;
 mod clips;
+mod fx;
+mod play;
+
+/// Test builds count heap allocations per thread, so a test can prove that code meant for the
+/// audio thread allocates nothing (04-audio-quality.md, "No allocation").
+#[cfg(test)]
+pub(crate) mod alloc_count {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNT: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    struct Counting;
+
+    fn bump() {
+        let _ = COUNT.try_with(|c| {
+            if let Some(n) = c.get() {
+                c.set(Some(n + 1));
+            }
+        });
+    }
+
+    // SAFETY: every call is passed straight to the system allocator; counting only touches a
+    // const-initialised thread-local Cell, which never allocates.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+            bump();
+            unsafe { System.alloc(l) }
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            unsafe { System.dealloc(p, l) }
+        }
+        unsafe fn realloc(&self, p: *mut u8, l: Layout, size: usize) -> *mut u8 {
+            bump();
+            unsafe { System.realloc(p, l, size) }
+        }
+    }
+
+    #[global_allocator]
+    static A: Counting = Counting;
+
+    /// Allocations made on this thread while `f` runs.
+    pub fn during(f: impl FnOnce()) -> usize {
+        COUNT.with(|c| c.set(Some(0)));
+        f();
+        COUNT.with(|c| c.replace(None)).unwrap_or(0)
+    }
+}
 pub mod command;
 
 pub use command::{Args, Effect, Kind, Reply, Spec, Value};
 use command::{opt, req};
 use crucible_diagnostics::{self as diag, Code, DawError};
-use crucible_project::{self as store, Journal, Project, TrackKind};
+use crucible_project::{self as store, Clip, Content, Journal, Project, TrackKind};
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 const UNDO_LIMIT: usize = 1000;
 const MAX_TRACKS: usize = 512;
@@ -45,6 +97,25 @@ pub struct Engine {
     history: Vec<String>,
     /// Clips copied with edit.copy or edit.cut. Shared by every front end.
     clipboard: clips::Clipboard,
+    /// Waveform outlines of imported files, by path. Small, and files in the audio folder never
+    /// change under the same name, so they are kept for the session.
+    peaks: HashMap<PathBuf, Arc<Vec<u8>>>,
+    /// The last state sent by `sync`: its revision number and the project as it was then.
+    seen: Option<(u64, Project)>,
+    /// Starts at the clock time in microseconds, so a front end that outlives an engine (the dev
+    /// bridge restarts it) can never hold a revision number the new engine also uses.
+    revision: u64,
+    /// Live playback, while it runs. Not part of the project: never saved, undone or journaled.
+    player: Option<play::Player>,
+    /// This machine's audio output choice, read from its settings file on first use.
+    output: Option<play::OutputChoice>,
+    /// Why playback last stopped by itself, until `transport.status` has reported it.
+    stop_note: Option<String>,
+}
+
+/// Microseconds since 1970: unique per engine, and below 2^53, so JavaScript reads it exactly.
+fn first_revision() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_micros() as u64)
 }
 
 struct Step {
@@ -69,6 +140,12 @@ impl Engine {
             journal: None,
             history: Vec::new(),
             clipboard: clips::Clipboard::default(),
+            peaks: HashMap::new(),
+            seen: None,
+            revision: first_revision(),
+            player: None,
+            output: None,
+            stop_note: None,
         }
     }
 
@@ -84,16 +161,39 @@ impl Engine {
         self.project != self.saved
     }
 
-    /// Everything a front end needs to draw: the model, where it lives, and what undo/redo would do.
-    pub fn state(&self) -> serde_json::Value {
-        json!({
-            "project": self.project,
+    /// Everything a front end needs to draw: the model, where it lives, and what undo/redo would
+    /// do. Sends only what changed when it can, because a big project is megabytes of JSON.
+    ///
+    /// The front end says which revision it holds (`since`). If that is the last one sent, `clips`
+    /// holds only the clips added or changed since then, `order` lists every clip id in model
+    /// order, and `full` is false: the front end keeps its own copies of the others. Otherwise
+    /// (first call, a reload, anything unexpected) the whole model goes out with `full: true`.
+    ///
+    /// Changed clips are found by address. An edited clip is always a new allocation (see
+    /// crucible-project, "Cheap copies"), and keeping the sent project here keeps every address in
+    /// it alive, so no address can be reused by a different clip.
+    pub fn sync(&mut self, since: Option<u64>) -> serde_json::Value {
+        let base = self.seen.as_ref().filter(|(rev, _)| since == Some(*rev)).map(|(_, p)| p);
+        let full = base.is_none();
+        let sent: HashSet<usize> = base.map(|p| p.clips.iter().map(|c| Arc::as_ptr(c) as usize).collect()).unwrap_or_default();
+        let clips: Vec<&Clip> = self.project.clips.iter().filter(|c| !sent.contains(&(Arc::as_ptr(c) as usize))).map(|c| &**c).collect();
+        let mut project = serde_json::to_value(Project { clips: Vec::new(), ..self.project.clone() }).unwrap_or_default();
+        project["clips"] = json!(clips);
+        let order: Vec<u32> = if full { Vec::new() } else { self.project.clips.iter().map(|c| c.id).collect() };
+        self.revision += 1;
+        let state = json!({
+            "revision": self.revision,
+            "full": full,
+            "order": order,
+            "project": project,
             "folder": self.folder,
             "dirty": self.is_dirty(),
             "undo": self.undo.last().map(|s| &s.command),
             "redo": self.redo.last().map(|s| &s.command),
             "journal": self.journal.is_some(),
-        })
+        });
+        self.seen = Some((self.revision, self.project.clone()));
+        state
     }
 
     pub fn specs() -> &'static [Spec<Engine>] {
@@ -142,6 +242,8 @@ impl Engine {
             if (matches!(spec.effect, Effect::Edit | Effect::History) && changed) || spec.effect == Effect::Clipboard {
                 self.write_journal(&line);
             }
+            // Playback follows every edit (D-034).
+            play::after_command(self, spec.effect == Effect::File, changed);
         }
         Ok(reply)
     }
@@ -247,7 +349,7 @@ const DISCARD: command::Arg = opt("discard", Kind::Bool, "drop unsaved changes i
 const TRACK: command::Arg = req("track", Kind::Track, "name, position (1, 2, ...) or id (#3)");
 
 /// The engine's command table: the rows below plus the clip, note and clipboard rows in clips.rs.
-static ALL_SPECS: LazyLock<Vec<Spec<Engine>>> = LazyLock::new(|| SPECS.iter().chain(clips::SPECS).map(|s| Spec { ..*s }).collect());
+static ALL_SPECS: LazyLock<Vec<Spec<Engine>>> = LazyLock::new(|| SPECS.iter().chain(clips::SPECS).chain(audio::SPECS).chain(fx::SPECS).chain(play::SPECS).map(|s| Spec { ..*s }).collect());
 
 static SPECS: &[Spec<Engine>] = &[
     Spec {
@@ -282,6 +384,13 @@ static SPECS: &[Spec<Engine>] = &[
         help: "The whole project model plus undo/redo state, as data. Front ends redraw from this.",
         effect: Effect::Read,
         run: project_state,
+    },
+    Spec {
+        name: "project.sync",
+        args: &[opt("since", Kind::Int, "the revision the front end holds")],
+        help: "Like project.state, but only the clips that changed since that revision.",
+        effect: Effect::Read,
+        run: project_sync,
     },
     Spec {
         name: "project.rename",
@@ -504,7 +613,25 @@ fn project_rename(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
 }
 
 fn project_tempo(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
-    e.project.tempo_bpm = range("tempo", a.need_number("bpm")?, 20.0, 999.0, " BPM")?;
+    let bpm = range("tempo", a.need_number("bpm")?, 20.0, 999.0, " BPM")?;
+    // Audio keeps its real duration: each clip stays on its beat, and its window into the file
+    // (offset, length) and the file's length are re-expressed in ticks at the new tempo.
+    let old = e.project.frames_per_tick();
+    e.project.tempo_bpm = bpm;
+    let new = e.project.frames_per_tick();
+    for i in 0..e.project.clips.len() {
+        if !e.project.clips[i].has_audio_file() {
+            continue;
+        }
+        let c = e.project.clip_mut(i);
+        let to_ticks = |frames: f64| (frames / new).round() as i64;
+        let (from, len) = (c.offset as f64 * old, c.length as f64 * old);
+        if let Content::Audio { source_length, frames, .. } = &mut c.content {
+            *source_length = (*frames as f64 / new).ceil().max(1.0) as i64;
+            c.offset = to_ticks(from).min(*source_length - 1);
+            c.length = to_ticks(len).clamp(1, *source_length - c.offset);
+        }
+    }
     Ok(Reply::new(format!("Tempo {} BPM", e.project.tempo_bpm), json!({ "tempo_bpm": e.project.tempo_bpm })))
 }
 
@@ -522,6 +649,10 @@ fn project_rate(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let hz = a.need_int("hz")?;
     if !store::SAMPLE_RATES.iter().any(|r| i64::from(*r) == hz) {
         return Err(DawError::new(Code::ValueOutOfRange, format!("{hz} Hz is not one of {:?}", store::SAMPLE_RATES)));
+    }
+    if let Some(c) = e.project.clips.iter().find(|c| matches!(c.content, Content::Audio { rate, frames, .. } if frames > 0 && i64::from(rate) != hz)) {
+        let Content::Audio { source, rate, .. } = &c.content else { unreachable!() };
+        return Err(DawError::new(Code::SampleRateMismatch, format!("clip #{} plays {source}, which is {rate} Hz; Crucible does not resample", c.id)));
     }
     e.project.sample_rate = hz as u32;
     Ok(Reply::new(format!("Sample rate {hz} Hz"), json!({ "sample_rate": hz })))
@@ -605,7 +736,13 @@ fn track_solo(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
 
 fn project_state(e: &mut Engine, _: &Args) -> Result<Reply, DawError> {
     let text = format!("{} ({} tracks){}", e.project.name, e.project.tracks.len(), if e.is_dirty() { ", unsaved" } else { "" });
-    Ok(Reply::new(text, e.state()))
+    Ok(Reply::new(text, e.sync(None)))
+}
+
+fn project_sync(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
+    let state = e.sync(a.number("since").map(|n| n as u64));
+    let text = if state["full"] == true { "Full state".to_string() } else { format!("{} changed", clips::plural(state["project"]["clips"].as_array().map_or(0, Vec::len), "clip")) };
+    Ok(Reply::new(format!("Revision {}: {text}", state["revision"]), state))
 }
 
 fn track_list(e: &mut Engine, _: &Args) -> Result<Reply, DawError> {
@@ -851,5 +988,40 @@ mod tests {
         run(&mut again, &format!("project.open \"{}\"", dir.display())).unwrap();
         assert_eq!(again.project(), &expected, "journal replays the copy, then the paste");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sync_sends_only_changed_clips_and_rebuilds_the_same_project() {
+        let mut e = Engine::new();
+        run(&mut e, "project.demo").unwrap();
+        let first = e.sync(None);
+        assert_eq!(first["full"], true);
+        let total = e.project().clips.len();
+        assert_eq!(first["project"]["clips"].as_array().unwrap().len(), total);
+        let rev = first["revision"].as_u64().unwrap();
+
+        // One clip edited, one removed: the change list holds just the edited one.
+        let a = e.project().clips[0].id;
+        let b = e.project().clips[1].id;
+        run(&mut e, &format!("clip.move #{a} --by 1; clip.remove #{b}")).unwrap();
+        let delta = e.sync(Some(rev));
+        assert_eq!(delta["full"], false);
+        let changed: Vec<u64> = delta["project"]["clips"].as_array().unwrap().iter().map(|c| c["id"].as_u64().unwrap()).collect();
+        assert_eq!(changed, vec![a as u64]);
+        let order: Vec<u64> = delta["order"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+        assert_eq!(order.len(), total - 1);
+        assert!(!order.contains(&(b as u64)));
+
+        // Undo brings the old clips back; they are the old allocations, so they count as changed
+        // relative to what was last sent, and the front end gets them.
+        let rev = delta["revision"].as_u64().unwrap();
+        run(&mut e, "undo; undo").unwrap();
+        let back = e.sync(Some(rev));
+        let changed = back["project"]["clips"].as_array().unwrap().len();
+        assert_eq!(changed, 2, "the moved clip back in place and the removed one restored");
+
+        // A stale revision gets everything.
+        assert_eq!(e.sync(Some(rev))["full"], true);
+        assert_eq!(e.sync(Some(9999))["full"], true);
     }
 }

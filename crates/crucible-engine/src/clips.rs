@@ -223,7 +223,13 @@ fn clip_json(c: &Clip) -> serde_json::Value {
             "offset": beats(c.offset), "gain_db": c.gain_db, "content": extra })
 }
 
-fn plural(n: usize, one: &str) -> String {
+/// A beat count for people: at most three decimals, no trailing zeros (31.921, not 31.920833333333334).
+fn short(b: f64) -> String {
+    let t = format!("{b:.3}");
+    t.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+pub(crate) fn plural(n: usize, one: &str) -> String {
     if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") }
 }
 
@@ -250,7 +256,7 @@ fn clip_add(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
         None => format!("{} {n}", if kind == TrackKind::Audio { "Audio" } else { "MIDI" }),
     };
     let content = match kind {
-        TrackKind::Audio => Content::Audio { source: format!("{name}.wav"), source_length: length },
+        TrackKind::Audio => Content::Audio { source: format!("{name}.wav"), source_length: length, frames: 0, rate: 0 },
         TrackKind::Instrument => Content::Midi { notes: Vec::new() },
     };
     let clip = Clip { id: e.project.next_clip_id, track, name, start, length, offset: 0, gain_db: 0.0, content };
@@ -263,7 +269,8 @@ fn clip_add(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
 fn clip_remove(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let idx = clip_indices(e, a.need_text("clips")?)?;
     let ids: Vec<u32> = idx.iter().map(|&i| e.project.clips[i].id).collect();
-    e.project.clips.retain(|c| !ids.contains(&c.id));
+    let gone: std::collections::HashSet<u32> = ids.iter().copied().collect();
+    e.project.clips.retain(|c| !gone.contains(&c.id));
     Ok(Reply::new(format!("Removed {}", plural(ids.len(), "clip")), json!({ "removed": ids })))
 }
 
@@ -273,7 +280,7 @@ fn clip_move(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let n = a.int("tracks").unwrap_or(0);
     for &i in &idx {
         let to_track = if n != 0 { shifted_track(e, e.project.clips[i].track, n)? } else { e.project.clips[i].track };
-        let c = &mut e.project.clips[i];
+        let c = e.project.clip_mut(i);
         c.start += d;
         c.track = to_track;
     }
@@ -294,7 +301,7 @@ fn clip_copy(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let n = a.int("tracks").unwrap_or(0);
     let mut new_ids = Vec::new();
     for &i in &idx {
-        let mut c = e.project.clips[i].clone();
+        let mut c = Clip::clone(&e.project.clips[i]);
         c.start += d;
         if n != 0 {
             c.track = shifted_track(e, c.track, n)?;
@@ -316,7 +323,7 @@ fn clip_trim(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     }
     if let Some(s) = a.number("start") {
         let s = ticks(s)?;
-        let c = &mut e.project.clips[i];
+        let c = e.project.clip_mut(i);
         let d = s - c.start;
         c.start = s;
         c.offset += d;
@@ -324,7 +331,7 @@ fn clip_trim(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     }
     if let Some(end) = a.number("end") {
         let end = ticks(end)?;
-        let c = &mut e.project.clips[i];
+        let c = e.project.clip_mut(i);
         c.length = end - c.start;
     }
     check(e, i)?;
@@ -337,7 +344,7 @@ fn clip_split(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let at = ticks(a.need_number("at")?)?;
     let mut created = Vec::new();
     for i in idx {
-        let c = e.project.clips[i].clone();
+        let c = Clip::clone(&e.project.clips[i]);
         if at <= c.start || at >= c.end() {
             continue;
         }
@@ -346,7 +353,7 @@ fn clip_split(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
         right.start = at;
         right.offset = c.offset + cut;
         right.length = c.length - cut;
-        e.project.clips[i].length = cut;
+        e.project.clip_mut(i).length = cut;
         // MIDI: each side keeps only the notes that start inside it, shortened to its edge.
         if let Content::Midi { notes } = &c.content {
             let keep = |from: i64, to: i64| -> Vec<Note> {
@@ -354,7 +361,7 @@ fn clip_split(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
             };
             let split_point = c.offset + cut;
             let left_notes: Vec<Note> = notes.iter().filter(|n| n.start < split_point).map(|n| Note { length: n.length.min(split_point - n.start), ..*n }).collect();
-            e.project.clips[i].content = Content::Midi { notes: left_notes };
+            e.project.clip_mut(i).content = Content::Midi { notes: left_notes };
             right.content = Content::Midi { notes: keep(split_point, i64::MAX) };
         }
         created.push(e.project.add_clip(right));
@@ -367,14 +374,14 @@ fn clip_split(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
 
 fn clip_rename(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let i = one_clip(e, a)?;
-    e.project.clips[i].name = clean_name(a.need_text("name")?)?;
+    e.project.clip_mut(i).name = clean_name(a.need_text("name")?)?;
     let c = &e.project.clips[i];
     Ok(Reply::new(format!("Clip #{} renamed to '{}'", c.id, c.name), clip_json(c)))
 }
 
 fn clip_gain(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let i = one_clip(e, a)?;
-    e.project.clips[i].gain_db = range("gain", a.need_number("db")?, -144.0, 24.0, " dB")?;
+    e.project.clip_mut(i).gain_db = range("gain", a.need_number("db")?, -144.0, 24.0, " dB")?;
     let c = &e.project.clips[i];
     Ok(Reply::new(format!("Clip #{} gain {}", c.id, db(c.gain_db)), clip_json(c)))
 }
@@ -382,7 +389,7 @@ fn clip_gain(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
 fn clip_quantize(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let i = one_clip(e, a)?;
     let grid = ticks(range("grid", a.number("grid").unwrap_or(0.25), 1.0 / 64.0, 16.0, " beats")?)?.max(1);
-    let c = &mut e.project.clips[i];
+    let c = e.project.clip_mut(i);
     let origin = c.start - c.offset; // timeline tick of content tick 0
     let Content::Midi { notes } = &mut c.content else {
         return Err(refuse("only MIDI clips can be quantized"));
@@ -403,7 +410,7 @@ fn clip_quantize(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
 
 fn clip_list(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let only = if a.text("track").is_some() { Some(track_id(e, a)?) } else { None };
-    let list: Vec<&Clip> = e.project.clips.iter().filter(|c| only.is_none_or(|t| c.track == t)).collect();
+    let list: Vec<&Clip> = e.project.clips.iter().map(|c| &**c).filter(|c| only.is_none_or(|t| c.track == t)).collect();
     if list.is_empty() {
         return Ok(Reply::new("No clips.", json!([])));
     }
@@ -412,7 +419,7 @@ fn clip_list(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
         let track = e.project.track_index(c.track).map(|i| e.project.tracks[i].name.as_str()).unwrap_or("?");
         let name: String = c.name.chars().take(20).collect();
         let track: String = track.chars().take(16).collect();
-        text.push_str(&format!("{:>5}  {name:<20} {track:<16} {:>9} {:>9}  {}\n", format!("#{}", c.id), beats(c.start), beats(c.length), if c.is_audio() { "audio" } else { "midi" }));
+        text.push_str(&format!("{:>5}  {name:<20} {track:<16} {:>9} {:>9}  {}\n", format!("#{}", c.id), short(beats(c.start)), short(beats(c.length)), if c.is_audio() { "audio" } else { "midi" }));
     }
     Ok(Reply::new(text.trim_end().to_string(), json!(list.iter().map(|c| clip_json(c)).collect::<Vec<_>>())))
 }
@@ -435,7 +442,7 @@ fn clip_notes(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
 // ---------------------------------------------------------------- notes
 
 fn midi_notes(e: &mut Engine, i: usize) -> Result<(i64, &mut Vec<Note>), DawError> {
-    let c = &mut e.project.clips[i];
+    let c = e.project.clip_mut(i);
     let offset = c.offset;
     match &mut c.content {
         Content::Midi { notes } => Ok((offset, notes)),
@@ -525,7 +532,7 @@ fn fill_clipboard(e: &mut Engine, idx: &[usize]) {
         .iter()
         .map(|&i| {
             let c = &e.project.clips[i];
-            (c.start - first, e.project.track_index(c.track).unwrap_or(0) as i64 - top, c.clone())
+            (c.start - first, e.project.track_index(c.track).unwrap_or(0) as i64 - top, Clip::clone(c))
         })
         .collect();
 }
@@ -540,7 +547,8 @@ fn edit_cut(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let idx = clip_indices(e, a.need_text("clips")?)?;
     fill_clipboard(e, &idx);
     let ids: Vec<u32> = idx.iter().map(|&i| e.project.clips[i].id).collect();
-    e.project.clips.retain(|c| !ids.contains(&c.id));
+    let gone: std::collections::HashSet<u32> = ids.iter().copied().collect();
+    e.project.clips.retain(|c| !gone.contains(&c.id));
     Ok(Reply::new(format!("Cut {}", plural(ids.len(), "clip")), json!({ "removed": ids })))
 }
 
@@ -600,7 +608,7 @@ fn project_demo(e: &mut Engine, _: &Args) -> Result<Reply, DawError> {
         length: b(len),
         offset: b(2),
         gain_db: 0.0,
-        content: Content::Audio { source: format!("{name}.wav"), source_length: b(len + 4) },
+        content: Content::Audio { source: format!("{name}.wav"), source_length: b(len + 4), frames: 0, rate: 0 },
     };
     let midi = |track: u32, name: &str, start: i64, len: i64, notes: Vec<Note>| Clip {
         id: 0,

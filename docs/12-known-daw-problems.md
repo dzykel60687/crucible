@@ -49,7 +49,7 @@ of rediscovering them one bug report at a time.
 - **Problem:** one ASIO driver per process; input and output must be the same device. Drivers ask the host to reset when the user changes their panel. Some report success from init while failing. Some only work if called in the order Cubase uses. ASIO timestamps can step backwards. A driver can stay listed after its hardware is unplugged.
 - **Evidence:** JUCE notes a Denon driver that returns true from init on failure, copies Cubase's call order because "some devices fail if we don't", debounces reset requests with a timer, and states ASIO cannot use different devices for input and output ([juce_ASIO_windows.cpp](https://github.com/juce-framework/JUCE/blob/master/modules/juce_audio_devices/native/juce_ASIO_windows.cpp)). A second stream fails because the driver is already loaded ([cpal #1356](https://github.com/RustAudio/cpal/issues/1356)). Focusrite's `systemTime` steps back and derived time overflows after about ten minutes ([cpal #1393](https://github.com/RustAudio/cpal/issues/1393), [#1370](https://github.com/RustAudio/cpal/issues/1370)). An unplugged Focusrite stays selectable ([Audacity #11981](https://github.com/audacity/audacity/issues/11981)).
 - **What they do:** one owner object per driver; duplex in one open; reset, resync and buffer-size messages schedule a full close and reopen on a normal thread after a short delay; driver time is never trusted to be monotonic.
-- **Crucible:** at the ASIO step (after Q4): one `AudioBackend` owns the driver; duplex only; reset requests become an engine event; time is clamped so it never runs backwards; a watchdog raises a coded error if no callback arrives within a few periods of start.
+- **Crucible:** at the ASIO step (D-035): one `AudioBackend` owns the driver; duplex only; reset requests become an engine event; time is clamped so it never runs backwards; a watchdog raises a coded error if no callback arrives within a few periods of start.
 - **Severity:** High on the Lynx machine. Med on the Behringer.
 
 ### A4. Exclusive-mode format negotiation
@@ -369,6 +369,8 @@ of rediscovering them one bug report at a time.
 - **Problem:** files at other rates play at the wrong speed or get resampled silently.
 - **Evidence:** Audacity refuses mismatched rates in one track and makes the user resample first ([PR #4739](https://github.com/audacity/audacity/pull/4739)).
 - **Crucible:** already covered by `04-audio-quality.md` rule 1. M2: convert once at import into `audio/`, say so in the dialog, record the original rate on the clip.
+  Built 2026-11-22 without the converter: `audio.import` refuses another rate with E5017 and says
+  how to proceed. Depth is kept: WAV is copied as is, MP3 and FLAC become 32-bit float WAV.
 - **Severity:** Med.
 
 ### F3. WAV variants and the 4 GB limit
@@ -398,7 +400,24 @@ of rediscovering them one bug report at a time.
 
 - **Problem:** old projects must open in new builds; new projects must not half-open in old ones.
 - **Crucible:** already covered: `crucible-project` refuses newer formats and damaged files (`STATUS.md`). Add the producing build's version to `project.json` and one tested upgrade step per format bump.
+  2026-11-22: loading now stamps the current format number, so saving an upgraded file no longer
+  writes the old number back (which would have let an older build open it and drop new data).
 - **Severity:** Low.
+
+### F7. MP3 files start late (encoder delay)
+
+- **Problem:** MP3 encoders put silence at the start (encoder delay) and pad the end. Only a
+  gapless header (LAME/Xing "info" tag) tells a decoder how much to cut. Without it an imported
+  MP3 sits a few tens of milliseconds late against the grid and against the WAV it came from.
+- **Evidence:** measured here 2026-11-22. A 16 s WAV encoded by Windows' own MP3 encoder (Media
+  Foundation, no gapless tag) decoded with symphonia 0.6 starts 1201 frames (25.0 ms) late and is
+  1920 frames shorter. Correlation against the original confirms the 1201-frame lag.
+- **What they do:** honour the gapless tag when present; otherwise leave the file as decoded and
+  let the user slide it.
+- **Crucible:** MP3 import decodes once to float WAV (`audio.import`). No guessed correction: a
+  wrong guess is worse than a known offset. Treat MP3 as a reference format; use WAV or FLAC for
+  anything that must line up. Whether symphonia trims LAME-tagged files is (unverified: no LAME here).
+- **Severity:** Low for references, Med if someone builds a song from MP3 stems.
 
 ---
 
