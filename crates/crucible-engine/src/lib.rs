@@ -19,8 +19,10 @@
 
 mod audio;
 mod clips;
+mod devices;
 mod fx;
 mod play;
+pub mod trail;
 
 /// Test builds count heap allocations per thread, so a test can prove that code meant for the
 /// audio thread allocates nothing (04-audio-quality.md, "No allocation").
@@ -111,6 +113,8 @@ pub struct Engine {
     output: Option<play::OutputChoice>,
     /// Why playback last stopped by itself, until `transport.status` has reported it.
     stop_note: Option<String>,
+    /// The audio devices as last listed, and the watch for changes. Started on first use.
+    devices: Option<devices::Devices>,
 }
 
 /// Microseconds since 1970: unique per engine, and below 2^53, so JavaScript reads it exactly.
@@ -146,6 +150,7 @@ impl Engine {
             player: None,
             output: None,
             stop_note: None,
+            devices: None,
         }
     }
 
@@ -349,7 +354,7 @@ const DISCARD: command::Arg = opt("discard", Kind::Bool, "drop unsaved changes i
 const TRACK: command::Arg = req("track", Kind::Track, "name, position (1, 2, ...) or id (#3)");
 
 /// The engine's command table: the rows below plus the clip, note and clipboard rows in clips.rs.
-static ALL_SPECS: LazyLock<Vec<Spec<Engine>>> = LazyLock::new(|| SPECS.iter().chain(clips::SPECS).chain(audio::SPECS).chain(fx::SPECS).chain(play::SPECS).map(|s| Spec { ..*s }).collect());
+static ALL_SPECS: LazyLock<Vec<Spec<Engine>>> = LazyLock::new(|| SPECS.iter().chain(clips::SPECS).chain(audio::SPECS).chain(fx::SPECS).chain(play::SPECS).chain(devices::SPECS).chain(trail::SPECS).map(|s| Spec { ..*s }).collect());
 
 static SPECS: &[Spec<Engine>] = &[
     Spec {

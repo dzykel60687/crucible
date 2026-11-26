@@ -621,7 +621,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "crucible-app"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "crucible-diagnostics",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-audio-io"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "cpal",
  "crucible-diagnostics",
@@ -645,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "crucible-audio-io",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-diagnostics"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -671,14 +671,14 @@ dependencies = [
 
 [[package]]
 name = "crucible-dsp"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "realfft",
 ]
 
 [[package]]
 name = "crucible-engine"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "crucible-audio-io",
  "crucible-diagnostics",
@@ -691,7 +691,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-midi-io"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "crucible-diagnostics",
  "midir",
@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-plugin-host"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "crucible-diagnostics",
  "serde",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-project"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "crucible-diagnostics",
  "serde",
@@ -2237,7 +2237,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "m0-omnisphere"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "cpal",

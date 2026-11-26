@@ -71,7 +71,7 @@ impl Drop for ProAudio {
     }
 }
 
-fn on_com_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+pub(crate) fn on_com_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     std::thread::spawn(move || {
         let _ = wasapi::initialize_mta();
         let out = f();
@@ -492,7 +492,7 @@ fn hresult(e: &WasapiError) -> Option<u32> {
 
 /// Turn a WASAPI failure into a coded error a person can act on. The HRESULT and Windows' own
 /// text are always kept, so the exact driver answer is in the log.
-fn explain(e: &WasapiError) -> DawError {
+pub(crate) fn explain(e: &WasapiError) -> DawError {
     let Some(hr) = hresult(e) else {
         return DawError::new(Code::AudioDriverError, e.to_string());
     };

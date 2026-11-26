@@ -59,6 +59,10 @@ codes! {
         "Check free disk space, that the folder exists and that you may write there. OneDrive folders can lock files while syncing.";
     LogUnavailable = "W1004", "The log file could not be created",
         "The program still runs but records nothing. Check that the folder shown by `crucible logs` is writable.";
+    SlowCommand = "W1005", "A command is taking a long time",
+        "Wait if it is an export or a large import. If the window stays stuck, close it and send a report: the log names the command that never finished.";
+    ReportHelperMissing = "E1006", "The report could not be made: crucible.exe was not found",
+        "The window uses the crucible.exe command-line tool to gather the report. It is installed in the tools folder beside the window program. Reinstall Crucible, or run `crucible.exe report` yourself.";
 
     // ---- 2: audio devices
     NoOutputDevice = "E2001", "No audio output device was found",
@@ -89,8 +93,8 @@ codes! {
         "The choice is kept beside the logs, in the per-user Crucible folder. Check that the folder can be written; the message names the file.";
     AudioDriverError = "E2099", "The audio driver reported an error",
         "The log line includes the driver's own code (HRESULT on Windows). Send the log.";
-    Dropout = "W2101", "The audio driver missed a deadline: an audible dropout",
-        "Use a larger buffer (--block 256 or 512), close CPU-heavy programs, use the High performance power plan and keep a laptop on mains power.";
+    Dropout = "W2101", "An audible dropout: the sound was interrupted",
+        "Use a larger buffer (`audio.output --buffer 256` or 512; `--block` in m0-play), close CPU-heavy programs, use the High performance power plan and keep a laptop on mains power.";
     LateWakeup = "W2102", "The audio thread woke up late: a risk of dropouts",
         "Harmless if rare. If it is frequent, follow the advice for W2101.";
 
@@ -183,6 +187,8 @@ codes! {
         "The log names the file the crash happened in. A plugin file there means the plugin crashed. Send the log and the .dmp file next to it.";
     Panic = "E9002", "Internal error: a bug in Crucible",
         "Send the log. It contains the source location of the bug.";
+    UiError = "E9003", "Internal error in the window: a bug in Crucible",
+        "The window may behave oddly from here on. Save under a new name, restart Crucible and send a report (Settings, Diagnostics, Create report file).";
     Uncategorised = "E9099", "Unexpected error",
         "Send the log.";
 }

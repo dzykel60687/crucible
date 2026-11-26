@@ -11,7 +11,7 @@
 //   double-click empty    new 1-bar MIDI clip on an instrument track
 //   double-click clip     open it in the piano roll or clip editor
 //   right-click           context menu
-import { demo } from './demo'
+import { tp } from './transport'
 import { clipPeaks, levelAt } from './wave'
 import { beats, ids, PPQ, type Clip } from './engine'
 import { bpb, changed, clip, created, redraw, run, selectClips, state, ui } from './store'
@@ -100,7 +100,6 @@ export function draw() {
     if (t.id === ui.selTrack) { ctx.fillStyle = '#ffffff06'; ctx.fillRect(0, y, W, C.rowH) }
     ctx.fillStyle = C.line; ctx.fillRect(0, y + C.rowH - 1, W, 1)
   })
-  if (demo.loop) { ctx.fillStyle = C.accent + '12'; ctx.fillRect(x(demo.loopStart), RULER_H, (demo.loopEnd - demo.loopStart) * ui.pxPerBeat, H) }
 
   // grid: bars always, beats when there is room, sixteenths when zoomed in
   const first = Math.floor(beatAt(0)), last = Math.ceil(beatAt(W))
@@ -147,11 +146,6 @@ export function draw() {
   // ruler
   ctx.fillStyle = C.surface; ctx.fillRect(0, 0, W, RULER_H)
   ctx.fillStyle = C.line; ctx.fillRect(0, RULER_H - 1, W, 1)
-  if (demo.loop) {
-    ctx.fillStyle = C.accent; ctx.globalAlpha = 0.85
-    rr(x(demo.loopStart), 3, (demo.loopEnd - demo.loopStart) * ui.pxPerBeat, 6, 3); ctx.fill()
-    ctx.globalAlpha = 1
-  }
   ctx.font = `500 10.5px ${C.mono}`; ctx.textBaseline = 'middle'
   for (let b = Math.floor(first / per) * per; b <= last; b += per) {
     const bar = Math.round(b / per)
@@ -162,9 +156,9 @@ export function draw() {
   }
 
   // playhead
-  const ph = Math.round(x(demo.pos))
+  const ph = Math.round(x(tp.pos))
   if (ph >= -1 && ph <= W + 1) {
-    ctx.fillStyle = demo.recording && demo.playing ? C.rec : C.accent
+    ctx.fillStyle = C.accent
     ctx.fillRect(ph, 0, 1.5, H)
     ctx.beginPath(); ctx.moveTo(ph - 5, 0); ctx.lineTo(ph + 6.5, 0); ctx.lineTo(ph + 0.75, 8); ctx.closePath(); ctx.fill()
   }
@@ -221,8 +215,8 @@ function drawClip(c: Clip, row: number, start: number, len: number, offset: numb
 
 /** Keep the playhead in view while playing, page by page (no constant scrolling). */
 export function follow() {
-  const px = x(demo.pos)
-  if (px > W * 0.92 || px < 0) ui.scrollX = Math.max(0, demo.pos * ui.pxPerBeat - W * 0.08)
+  const px = x(tp.pos)
+  if (px > W * 0.92 || px < 0) ui.scrollX = Math.max(0, tp.pos * ui.pxPerBeat - W * 0.08)
 }
 
 export function zoom(factor: number, anchorPx = W / 2) {
@@ -276,7 +270,7 @@ cv.addEventListener('pointerdown', (e) => {
   try { cv.setPointerCapture(e.pointerId) } catch { /* pointer already gone: the drag still works inside the canvas */ }
   if (e.offsetY < RULER_H) {
     drag = { kind: 'scrub' }
-    demo.pos = Math.max(0, snap(beatAt(e.offsetX), e.altKey))
+    tp.pos = Math.max(0, snap(beatAt(e.offsetX), e.altKey))
     redraw()
     return
   }
@@ -316,7 +310,7 @@ cv.addEventListener('pointermove', (e) => {
     return
   }
   autoScroll(e.offsetX)
-  if (drag.kind === 'scrub') { demo.pos = Math.max(0, snap(beatAt(e.offsetX), e.altKey)); redraw(); return }
+  if (drag.kind === 'scrub') { tp.pos = Math.max(0, snap(beatAt(e.offsetX), e.altKey)); redraw(); return }
   if (drag.kind === 'marquee') { drag.x1 = e.offsetX + ui.scrollX; drag.y1 = e.offsetY + ui.scrollY; marqueeSelect(drag); redraw(); return }
   if (drag.kind === 'trim') {
     const c = clip(drag.id)
@@ -345,7 +339,7 @@ const finish = async (e: PointerEvent) => {
   if (d.kind === 'marquee') {
     if (Math.hypot(d.x1 - d.x0, d.y1 - d.y0) < 4) {
       // A plain click on empty space: put the playhead there.
-      demo.pos = Math.max(0, snap(beatAt(d.x0 - ui.scrollX), e.altKey))
+      tp.pos = Math.max(0, snap(beatAt(d.x0 - ui.scrollX), e.altKey))
     }
     changed()
     return
@@ -445,5 +439,5 @@ export function dropTarget(clientX: number, clientY: number): { track: number | 
 }
 
 export function pasteTarget(): { track: number | null; at: number } {
-  return { track: ui.selTrack ?? state.project.tracks[0]?.id ?? null, at: beats(Math.round(demo.pos * PPQ)) }
+  return { track: ui.selTrack ?? state.project.tracks[0]?.id ?? null, at: beats(Math.round(tp.pos * PPQ)) }
 }

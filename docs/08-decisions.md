@@ -551,6 +551,130 @@ installer to public repo." Done first:
 Older commits say `license = "MIT"` in `Cargo.toml` and have no licence file. They stay readable
 in the history; Dzyan is their only author.
 
+## D-037. The session log is a full record of a session, and the window makes the report. *Asked for by Dzyan 2026-11-23; the design is Claude's, Proposed.*
+
+His words: testing on another PC, "I need to be able to provide a log file of basically
+everything I was doing, what was happening behind the scenes, and send it to you", and from it
+alone "you should be able to parse ... what needs to be done". Before this the log held command
+text, coded errors and crashes, and nothing else: not what a command answered, not which device
+playback opened, no dropouts, nothing from the window.
+
+What a log holds now (`docs/11-error-codes.md` lists every line type):
+
+1. **Every command with its outcome**: how long it took and what it answered. One helper
+   (`crucible-engine/src/trail.rs`) used by the command line and the window alike.
+2. **Playback**: the device, driver, format and buffer opened; a health line every ten seconds;
+   each dropout when it happens, with its cause and the position in the song; late wake-ups;
+   each edit taken over during playback; the totals at the end. The audio thread still only
+   counts (real-time rule); the lines are written from the command thread when the window asks
+   for the play position, twenty times a second.
+3. **The window**: clicks, double-clicks, right-clicks, drags, keys, dropped files, every
+   message shown, resizes, freezes, its own errors (code E9003), focus changes. They travel as
+   `log.ui` commands, because the window has no file access (D-022), and are written before the
+   command they caused. Never recorded: text typed into fields, mouse movement.
+4. **The person's own notes**: F9 in the window, `mark` anywhere. The moment is logged at the
+   key press; the words follow with "noticed N s before this line".
+5. **Which build**: the commit in every header and in `crucible version`, beside the fingerprint.
+6. **A watchdog**: a warning when a command has run for 5, 30, 120 and 600 seconds, so a hang
+   names its command.
+
+The report: Settings, Diagnostics, Create report file (or `report` in the Console tab) writes one
+file to the Desktop. The window first copies the project and the play state into its log
+(`log.snapshot`), then starts `crucible.exe report`, which owns the machine check. One
+implementation, two ways in.
+
+Costs, measured or bounded: nothing per frame in the window (lines are batched, at most one
+engine call per 400 ms, plus a two-per-second timer for freeze detection); about 40 log lines
+per minute of playback; a log of a long session stays under a megabyte. A machine that cannot
+keep up writes one dropout line a second at most.
+
+Rejected:
+- A second, structured log (JSON lines) beside the text one. Two files to keep in step; the text
+  lines already have fixed shapes and fixed tags.
+- A network upload. Crucible makes no connections; the person sends the file.
+- Logging from the audio thread or the mixing thread. A slow disk would cause the very dropout
+  being logged.
+- Recording what is typed into fields, or every mouse move. Privacy and volume.
+
+**Where the log is, decided by Dzyan 2026-11-25:** one file "in the root application directory",
+live while the program runs, and "if the app restarts, it should just write over that same log
+file". Built that way: `crucible-app.log` beside the program, started afresh each run; the 200
+dated files in a hidden folder are gone. Two things added to his words, both Claude's: the run
+before is kept once as `.previous.log` (otherwise restarting after a crash erases the log of the
+crash), and where Windows will not let the program write beside itself (an install under Program
+Files) the file goes to `%LOCALAPPDATA%\Crucible`. A per-user installer would put program and
+log together in a folder he can write; that is his to ask for.
+
+Verified by machine on 2026-11-23 (`docs/test-reports/2026-11-23-devlaptop-logging-and-report.md`).
+Not verified: a real problem diagnosed from a log sent from another PC.
+
+## D-038. The window shows only what works, and the devices it shows are real. *Asked for by Dzyan 2026-11-25; the details are Claude's, Proposed.*
+
+His first real use found Stop dead and the mixer faders "shaking up and down" during playback,
+and he asked for the demo content out, devices reported accurately, a way round programs
+"stealing" the sound driver or at least detection of it, and volume sliders by the tracks.
+
+**Why Stop died and the faders shook.** Both came from one fault. While playing, the window
+rebuilt its whole page every time the dropout count changed. A rebuilt fader spent one frame at
+the top before being placed, and a rebuilt button is a new element: a click whose press and
+release straddle the rebuild is thrown away by the browser. On his PC the count was changing all
+the time, so the faders flickered and Stop never registered. Fixed at three levels:
+
+1. Nothing is rebuilt for a number. Dropouts, position and levels are written into the existing
+   elements; the play button's icon is replaced only when its state changes.
+2. The page is never rebuilt while a mouse button is held. The rebuild waits for the release
+   (`store.ts`). This protects every button and every drag, not just Stop.
+3. A fader's place comes from a CSS variable, so it is right in its first frame.
+
+**Why the count was changing all the time** is not known for certain: he tested on another PC
+and its log was not sent. The likely cause was found and fixed: the playback queue was sized from
+the buffer the driver reported in its first callback, and shared-mode and some ASIO drivers ask
+for more later; every such request then ran the queue dry. The queue now sizes itself from what
+the driver really takes (`play.rs`, `Shared::want`), and the log says when that differs.
+
+**What left the window** until the engine can do it: the demo song at start-up; record, loop and
+metronome buttons; arm buttons; the loudness readout, mono and A/B buttons; made-up plugin names
+and the plugin picker; the MIDI and Plugins pages of Settings; made-up waveforms. A control that
+does nothing reads as a broken program. `project.demo` remains as a command: tests use it.
+
+**Devices** (`crucible-audio-io/src/wasapi_endpoints.rs`, `crucible-engine/src/devices.rs`,
+`app/src/devices.ts`):
+- `audio.devices` lists every output and input Windows has, the default, and the rate, bit depth
+  and channels Windows runs each at. `--probe` adds the rates each accepts in exclusive mode and
+  the ASIO drivers. Settings, Audio shows all of it and sets the output, driver and buffer.
+- Plugging in and unplugging: Windows tells the engine (an endpoint notification callback); the
+  window asks the engine every two seconds whether anything was reported and lists again only
+  then. A change shows as a message and a log line.
+- The top bar names the output that will be used and its rate; while playing, what the driver
+  really gave.
+
+**"Stealing" the driver.** What can and cannot be done:
+- Exclusive mode and most ASIO drivers give one program the device. That is what makes them
+  bit-exact and low-latency, and it is why a browser goes silent beside REAPER on ASIO. A program
+  cannot share a device another program holds this way: the driver refuses.
+- Crucible's own behaviour: it holds the device only between Play and Stop. The **Shared** driver
+  in Settings lets every other program keep playing, at the cost of Windows mixing and, when
+  rates differ, converting the sound. D-018's order (ASIO, exclusive, shared) is unchanged; whether
+  Shared should be the default is his call (it trades priority 2, transparent sound, for
+  convenience).
+- Detection: before opening an output Crucible lists the programs that have sound on it. If they
+  will be silenced it says so when playback starts, and "device in use" errors name them.
+  Limit: a program holding a device through ASIO is invisible, because ASIO goes round Windows.
+
+**Volume by the tracks.** Each track header has a slider: the mixer's fader lying down, the same
+travel and the same command. Faders at the same level now sit at the same height on every strip.
+Named "Volume" in the window; the command stays `track.gain`.
+
+**The GUI is tested by machine before he sees it** (`tools/gui-test.ps1`): the real window,
+clicked through its debugging port with real mouse events held about 90 ms. Every button must do
+something; every popup must open on screen with nothing squashed; nothing may move during
+playback, also while dropouts are forced by freezing the mixing thread; Stop must stop on the
+first click. Earlier tests clicked instantly and only while stopped, which is how both faults got
+through. Every GUI bug found from now on gets a check there.
+
+Not verified: plugging a real device in and out; the "in use by" names (nothing else was playing
+on this laptop during the tests); anything on the PC where the faults were seen.
+
 ---
 
 ## Facts that decisions rest on, with dates

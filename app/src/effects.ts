@@ -2,7 +2,6 @@
 // is drawn from the engine's own parameter table (`fx.kinds`, crucible-dsp's KINDS), so the window
 // has no ideas of its own about an effect's settings, and every change is an `fx.*` command (D-022).
 import { closeLayer, dialog, menu, textPrompt } from './dialogs'
-import { plugins } from './demo'
 import { exec, q, type Insert, type Track } from './engine'
 import { icon } from './icons'
 import { dragNumber, esc, run, state, toast, track } from './store'
@@ -31,10 +30,9 @@ function show(p: FxParam, v: number): string {
 }
 
 export function openEffectPicker(t: Track) {
-  const vst = plugins.filter((p) => p.kind === 'Effect').map((p) => p.name)
   const d = dialog(`Add effect to ${t.name}`, `<div class="content">
       <div class="plugin-list">${kinds.map((k) => `<button data-k="${k.name}"><span class="pi">${icon.plug}</span><span><b>${esc(k.label)}</b><small>${esc(k.help)}</small></span></button>`).join('')}</div>
-      <div class="sub" style="margin-top:10px">VST3 effects (${esc(vst.join(', '))}) come with plugin hosting (M3).</div>
+      <div class="sub" style="margin-top:10px">VST3 effects come with plugin hosting, which is not built yet.</div>
     </div>`, { footer: '<button class="btn" data-close>Cancel</button>' })
   d.querySelectorAll<HTMLButtonElement>('[data-k]').forEach((b) => (b.onclick = async () => {
     closeLayer()

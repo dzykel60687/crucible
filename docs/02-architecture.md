@@ -63,8 +63,8 @@ crucible/
   app/                          the window (crucible-app.exe)
     src-tauri/                  Tauri 2 shell. One `exec` command into the engine. Adapter only.
     src/                        TypeScript UI, no framework. Canvas for timeline, piano roll, meters.
-                                demo.ts holds every stand-in for engine features not built yet
-                                (record, loop, loudness, plugins); transport.ts is the real transport.
+                                Nothing is shown that the engine cannot do (D-038). transport.ts is
+                                the transport, devices.ts the audio devices, trail.ts the log trail.
   spikes/
     m0-omnisphere/              throwaway test program. Deleted or archived after M0.
   docs/

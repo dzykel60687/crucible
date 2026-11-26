@@ -31,12 +31,12 @@ To be judged by eye at M1. Nothing here is final.
 ```
 +--------------------------------------------------------------------------------+
 | TOP BAR                                                                        |
-| [project name]   |<  >  o  []   tempo  bar.beat  time  | headroom LUFS (M) (A/B) | (gear) |
+| [project name]   |<  >   tempo  bar.beat  time          | peak   [output device] | (gear) |
 +----------------+---------------------------------------------------------------+
 | TRACK HEADERS  | TIMELINE (canvas)                                             |
 | name           | ruler                                                         |
-| arm mute solo  | clips, waveforms, MIDI notes in miniature                     |
-| gain  pan      |                                                               |
+| mute solo      | clips, waveforms, MIDI notes in miniature                     |
+| volume  pan    |                                                               |
 | ...            |                                                               |
 | [+ add track]  |                                                               |
 +----------------+---------------------------------------------------------------+
@@ -47,11 +47,12 @@ To be judged by eye at M1. Nothing here is final.
 Top bar contents, left to right:
 
 - Project name. Click for open, save, export. That is the whole "File menu".
-- Transport: return to start, play or stop, record, loop.
+- Transport: return to start, play or stop. Record and loop join it when the engine can do them
+  (D-038: nothing is shown that does not work).
 - Tempo and time signature.
 - Position, in bars and in time.
-- Headroom number and clip light. Loudness readout. Mono button. Reference A/B button.
-- A gear for settings. An indicator for audio device state and overruns.
+- Peak (headroom) number and clip light. Loudness, mono and reference A/B come back when built.
+- The audio output in use, its rate, and the dropout count. A gear for settings.
 
 That is the entire top bar. Anything proposed for it has to displace something.
 

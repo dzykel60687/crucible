@@ -180,6 +180,19 @@ pub fn exception_name(code: u32) -> Option<&'static str> {
     })
 }
 
+/// A command for a helper program that must not show a window of its own.
+///
+/// A console program started by a GUI program gets a console window, which would flash on
+/// screen. CREATE_NO_WINDOW starts it without one; its output is still readable through pipes.
+/// macOS and Linux need nothing (platform_other.rs). Ledger row: "Hidden helper process".
+pub fn quiet_command(exe: &Path) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut c = std::process::Command::new(exe);
+    c.creation_flags(CREATE_NO_WINDOW);
+    c
+}
+
 /// Describe how a child process ended, decoding Windows exception codes.
 pub fn describe_exit(status: &std::process::ExitStatus) -> String {
     match status.code() {

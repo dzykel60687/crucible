@@ -1,10 +1,9 @@
 // Bottom panel: Mixer, Piano roll, Clip editor, Console. One shown at a time.
-import { demo } from './demo'
+import { tp } from './transport'
 import { clipPeaks, levelAt } from './wave'
 import { icon } from './icons'
-import { openPluginPicker } from './dialogs'
 import { effectMenu, fxLabel, openEffectEditor, openEffectPicker } from './effects'
-import { bpb, changed, clip, dragNumber, esc, fmtDb, fmtPan, run, state, toggleMute, toggleSolo, ui, type Tab } from './store'
+import { bpb, changed, clip, dbToPos, dragNumber, esc, fmtDb, fmtPan, posToDb, run, state, toggleMute, toggleSolo, ui, type Tab } from './store'
 import { trackColor } from './timeline'
 import { beats, PPQ, q, type Clip, type Track } from './engine'
 
@@ -40,9 +39,9 @@ export function renderTabs() {
 
 function hint() {
   switch (ui.tab) {
-    case 'mixer': return 'Drag faders and knobs · double-click resets · Shift for fine'
+    case 'mixer': return 'Volume and pan: drag · double-click resets · Shift for fine'
     case 'piano': return 'Draw tool adds notes · double-click a note deletes it · Del removes the selected one'
-    case 'clip': return 'Drag the gain value · the waveform is made up until audio import exists'
+    case 'clip': return 'Clip gain is applied before the effects · drag the value'
     case 'console': return 'Every button above is one of these commands'
   }
 }
@@ -65,10 +64,6 @@ export function renderPanel() {
 // ------------------------------------------------------------------ mixer
 const meterCanvases = new Map<number, HTMLCanvasElement>()
 
-const FADER_EXP = 1.6
-const dbToPos = (db: number) => (db <= -100 ? 0 : Math.pow(Math.min(1, Math.max(0, (db + 60) / 72)), 1 / FADER_EXP))
-const posToDb = (p: number) => (p <= 0.01 ? -144 : Math.round((72 * Math.pow(p, FADER_EXP) - 60) * 10) / 10)
-
 function mixer(view: HTMLElement) {
   meterCanvases.clear()
   const wrap = document.createElement('div')
@@ -86,32 +81,30 @@ function strip(t: Track | null): HTMLElement {
   el.className = 'strip' + (t ? '' : ' master') + (t && t.id === ui.selTrack ? ' sel' : '')
   el.style.setProperty('--c', t ? trackColor(t.id) : 'var(--accent)')
   const effects = t?.effects ?? []
-  const inst = t?.kind === 'instrument' ? (demo.instrument.get(t.id) ?? null) : null
   el.innerHTML = `
     <div class="sname"><i></i><span>${esc(t ? t.name : 'Master')}</span></div>
     <div class="inserts">
-      ${t?.kind === 'instrument' ? `<button class="insert ${inst ? 'filled' : 'empty'}" data-slot="inst">${inst ? esc(inst) : '+ instrument'}</button>` : ''}
       ${effects.map((f, i) => `<button class="insert filled ${f.bypass ? 'off' : ''}" data-fx="${i + 1}" title="${esc(fxLabel(f))}${f.bypass ? ' (bypassed)' : ''}: click to edit, right-click for more">${esc(fxLabel(f))}</button>`).join('')}
       ${t && effects.length < 8 ? '<button class="insert empty" data-slot="fx">+ effect</button>' : ''}
     </div>
     ${t ? `<svg class="pan-knob" viewBox="0 0 34 34" title="Pan"></svg>` : '<div style="height:34px;display:grid;place-items:center;font-size:10.5px;color:var(--text-faint)">STEREO</div>'}
     <div class="fader-area">
-      <div class="fader" title="${t ? 'Gain' : 'Master gain'}"><div class="rail"></div><div class="cap"></div></div>
+      <div class="fader" title="${t ? 'Volume' : 'Master volume'}: drag, Shift for fine, double-click for 0 dB" style="--p:${1 - dbToPos(gain)}"><div class="rail"></div><div class="cap"></div></div>
       <canvas class="meter"></canvas>
     </div>
     <div class="db">${fmtDb(gain)} dB</div>
-    <div class="ms">${t ? `<button class="tbtn m ${t.mute ? 'on' : ''}">M</button><button class="tbtn s ${t.solo ? 'on' : ''}">S</button>` : `<button class="tbtn m ${demo.mono ? 'on' : ''}" title="Mono check">Mo</button>`}</div>`
+    <div class="ms">${t ? `<button class="tbtn m ${t.mute ? 'on' : ''}" title="Mute">M</button><button class="tbtn s ${t.solo ? 'on' : ''}" title="Solo">S</button>` : '<span class="tbtn" style="visibility:hidden"></span>'}</div>`
   el.onclick = () => { if (t && ui.selTrack !== t.id) { ui.selTrack = t.id; changed() } }
   meterCanvases.set(id, el.querySelector('canvas')!)
 
   // fader: absolute position, command on release
-  const fader = el.querySelector<HTMLElement>('.fader')!, cap = fader.querySelector<HTMLElement>('.cap')!, dbEl = el.querySelector<HTMLElement>('.db')!
+  // The cap's place comes from a CSS variable, so it is right in the very first frame. Placing it
+  // a frame late made every cap jump whenever the mixer was redrawn (found 2026-11-25).
+  const fader = el.querySelector<HTMLElement>('.fader')!, dbEl = el.querySelector<HTMLElement>('.db')!
   const place = (db: number) => {
-    const h = fader.clientHeight - 12
-    cap.style.transform = `translateY(${6 + (1 - dbToPos(db)) * h}px)`
+    fader.style.setProperty('--p', String(1 - dbToPos(db)))
     dbEl.textContent = `${fmtDb(db)} dB`
   }
-  requestAnimationFrame(() => place(gain))
   const target = t ? `track.gain #${t.id}` : 'master.gain'
   fader.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return
@@ -161,13 +154,10 @@ function strip(t: Track | null): HTMLElement {
       b.onclick = (e) => {
         e.stopPropagation()
         if (slot) openEffectEditor(t.id, slot)
-        else if (b.dataset.slot === 'fx') openEffectPicker(t)
-        else openPluginPicker(t, 'Instrument')
+        else openEffectPicker(t)
       }
       if (slot) b.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); effectMenu(t, slot, { x: e.clientX, y: e.clientY }) }
     })
-  } else {
-    el.querySelector<HTMLButtonElement>('.m')!.onclick = () => { demo.mono = !demo.mono; changed() }
   }
   return el
 }
@@ -191,7 +181,7 @@ export function drawMeters() {
     const c = cv.getContext('2d')!
     c.setTransform(dpr, 0, 0, dpr, 0, 0)
     c.fillStyle = '#0a0c10'; c.fillRect(0, 0, w, h)
-    const lv = demo.levels.get(id) ?? { l: 0, r: 0, pl: 0, pr: 0 }
+    const lv = tp.levels.get(id) ?? { l: 0, r: 0, pl: 0, pr: 0 }
     const toY = (lin: number) => { const db = 20 * Math.log10(Math.max(lin, 1e-6)); return h - Math.max(0, Math.min(1, (db + 60) / 66)) * h }
     const bw = (w - 3) / 2
     const g = meterGradient(c, h)
@@ -320,7 +310,7 @@ function piano(view: HTMLElement) {
       drawNote(n, isSel && !preview, isPrev && !!preview)
     }
     if (preview) drawNote(preview, true, false)
-    const ph = demo.pos - c.start / PPQ
+    const ph = tp.pos - c.start / PPQ
     if (ph >= 0 && ph <= len / PPQ) { k.fillStyle = accent(); k.fillRect(KEYS + ph * ppb, 0, 1.5, h - VEL) }
   }
   new ResizeObserver(drawRoll).observe(cv)
@@ -442,7 +432,7 @@ function clipEditor(view: HTMLElement) {
     </div></div>` : '<div class="empty-note">No audio clip selected.<br>Double-click an audio clip in the timeline.</div>'}
   </div>`
   if (!c || !src) return
-  view.querySelector<HTMLButtonElement>('[data-split]')!.onclick = () => run(`clip.split #${c.id} ${beats(Math.round(demo.pos * PPQ))}`)
+  view.querySelector<HTMLButtonElement>('[data-split]')!.onclick = () => run(`clip.split #${c.id} ${beats(Math.round(tp.pos * PPQ))}`)
   view.querySelector<HTMLButtonElement>('[data-del]')!.onclick = () => run(`clip.remove #${c.id}`)
   const nameEl = view.querySelector<HTMLElement>('.name-edit')!
   nameEl.style.cursor = 'text'
@@ -477,7 +467,7 @@ function clipEditor(view: HTMLElement) {
     }
     k.fill()
     if (gain > 1) { k.fillStyle = '#ff475733'; k.fillRect(0, 0, w, 10); k.fillRect(0, h - 10, w, 10) }
-    const ph = (demo.pos - c.start / PPQ) / lenB
+    const ph = (tp.pos - c.start / PPQ) / lenB
     if (ph >= 0 && ph <= 1) { k.fillStyle = accent(); k.fillRect(ph * w, 0, 1.5, h) }
   }
   new ResizeObserver(() => drawWave()).observe(cv)

@@ -2,7 +2,7 @@
 
 Update this file at the end of every session. Keep it short. Newest log entry on top.
 
-## Where things stand (as of 2026-11-23)
+## Where things stand (as of 2026-11-25)
 
 - **Phase:** M0. Step A done and verified on the dev workstation. Step B code written,
   **untested with any real plugin**, waiting on Dzyan.
@@ -14,9 +14,15 @@ Update this file at the end of every session. Keep it short. Newest log entry on
 - **First window built** (D-025): `app/` → `crucible-app.exe`, Tauri 2 + plain TypeScript.
   Dzyan: "GUI looks pretty good." Real engine for project, track, **clip and note** commands
   (D-027: clips moved into the model early so mouse editing is undoable and journaled). Five
-  **layout themes** (D-028). **Bundled fonts** Inter and JetBrains Mono (D-026). Record, loop,
-  metronome, loudness, the device list in Settings and plugins are still demo stand-ins in
-  `app/src/demo.ts`.
+  **layout themes** (D-028). **Bundled fonts** Inter and JetBrains Mono (D-026).
+- **The window shows only what works** (D-038, 2026-11-25): no demo song, no stand-in buttons
+  (record, loop, metronome, loudness, mono, A/B, arm, plugin picker are gone until built). It
+  starts empty. Each track header has a volume slider, the same control as the mixer fader.
+- **Audio devices are real** (D-038): Settings, Audio lists the outputs and inputs Windows has,
+  the rate each runs at, which other programs are using them, and sets output, driver and buffer.
+  Plugging in and out is noticed. **Not yet tried with a real device being plugged in.**
+- **`tools/gui-test.ps1` tests the real window by machine**: 34 checks, all passing on the dev
+  laptop. Run it after every change to the window.
 - **Audio files and offline export work** (D-031, built overnight 2026-11-22 at Dzyan's request):
   `audio.import` (WAV copied, MP3/FLAC decoded once), `clip.place`, real waveforms (`audio.peaks`,
   cached in `cache/peaks/`), `project.export` (16/24/32f WAV, gain, balance pan D-030, mute, solo,
@@ -30,10 +36,11 @@ Update this file at the end of every session. Keep it short. Newest log entry on
 - **ASIO is compiled in** (D-035, decided): cpal's `asio` feature. The SDK's host files are in the repo
   (`third-party/asiosdk`); LLVM's `libclang.dll` sits beside the repo in `..\crucible-sdk`. One `open_output` picks ASIO, else exclusive, else shared (D-018).
   **No ASIO stream has ever run**: this laptop has no ASIO driver. The Lynx is the first test.
-- **Installer built and released**: `Crucible_0.0.1_x64_en-US.msi`, 6 MB, installs 16.8 MB (the
-  window 12.1 MB, the `crucible` tool 4.1 MB, `LICENSE.txt`, `THIRD-PARTY-NOTICES.txt`). On the
-  repo's Releases page as `v0.0.1`, a pre-release. Also in `dist/installer`. Unsigned. Unpacked
-  and checked by machine; **not yet installed on any PC** (needs administrator rights).
+- **Released: 0.0.2** (2026-11-25, at his word: "push this and installer up to Git"). On the
+  repo's Releases page as `v0.0.2`, a pre-release, with `Crucible_0.0.2_x64_en-US.msi`: 6 MB,
+  installs 17 MB (the window, the `crucible` tool, `LICENSE.txt`, `THIRD-PARTY-NOTICES.txt`).
+  Unsigned. Also in `dist/installer`. **Not yet installed on any PC by anyone** (needs
+  administrator rights). `v0.0.1` is still there; it has the Stop and fader faults.
 - **Built-in effects** (D-033, 2026-11-23): Reverb (Room/Hall/Plate), IR Reverb (zero-latency
   convolution with his IR files), Delay and Echo, as track inserts edited by `fx.*` commands and
   from the mixer slots. Machine-tested (`crucible-dsp`); not yet heard. CPU budget: quality
@@ -49,8 +56,14 @@ Update this file at the end of every session. Keep it short. Newest log entry on
 - **Build philosophy recorded** (D-024): small, fast, robust; budgets in `01-vision-and-priorities.md`;
   GUI motion rules and the pushback rule in `05-gui-design-brief.md`.
 - **Diagnostics in place** (D-021, `docs/11-error-codes.md`): coded errors with help text, a
-  crash-proof log per run, native crash capture with module name and minidump, `crucible report` to
-  bundle everything into one file. Crash path verified with a fake crashing plugin.
+  crash-proof log per run, native crash capture with module name and minidump. Crash path verified
+  with a fake crashing plugin.
+- **The log is a full record of a session** (D-037): every command with its outcome and timing,
+  playback health and every dropout with its cause, the devices and their changes, what was
+  clicked and shown in the window, his own marks (F9), the commit of the build. It is **one file
+  beside the program**, `crucible-app.log`, started afresh each run, the run before kept as
+  `.previous.log`. **Settings, Diagnostics, Create report file** writes one file to the Desktop.
+  Not yet used to diagnose a real problem from another PC.
 - **Built and staged:** `dist/m0/crucible.exe` and `dist/m0/m0-play.exe`, release builds with the C
   runtime linked in, so they copy to any Windows PC. Their `.pdb` files sit beside them so crash
   and panic stacks name source lines. `dist/` is not in git; rebuild with the
@@ -61,33 +74,42 @@ Update this file at the end of every session. Keep it short. Newest log entry on
 
 | # | Blocker | His action |
 |---|---|---|
-| 1 | **Listen: playback and effects** | `docs/test-reports/2026-11-23-devlaptop-live-playback-and-asio.md` steps 1 to 5; the effects exports in `2026-11-23-devlaptop-effects.md` |
-| 2 | **Lynx machine: ASIO and M0** | Same report steps 6 and 7 (first ever ASIO run), then `2026-11-20-M0-stepB-checklist.md` |
-| 3 | **Install the MSI on another PC** | Same report step 9. The installer is on the Releases page |
-| 4 | **"GPLv3 or later", or version 3 only?** | Claude chose "or later" (D-036). Cheap to change now, harder once others build on it |
-| 5 | **Standing approval to commit and push as work proceeds? (Q7)** | Each push is still asked for |
-| 6 | **Proposed decisions** | D-030 pan law, D-031 audio model, D-032 change lists, D-033's other choices (IR last-bit differences between machines, no IRs shipped), D-034 playback design |
-| 7 | **Open question** | Q13 sample-rate conversion at import |
-| 8 | **GUI feel** | Try and report: mouse editing, the five layouts, import, export, mute/solo, paste, piano-roll wheel. All built; his "yes to #10" on 2026-11-23 was read as "noted", not as a test result |
-| 9 | **The dev workstation is not a test machine** | Fine for now. Long term, decide whether to develop on the Lynx machine (Q2) |
-| 10 | **A free VST3 instrument on the dev machine** | Optional (Q6) |
+| 1 | **Send the log from the PC where Stop failed** | From that PC, after installing 0.0.2: play, then Settings, Diagnostics, Create report file. The window faults are fixed; why dropouts were being counted there is still a guess (D-038) |
+| 2 | **Listen: playback and effects** | `docs/test-reports/2026-11-23-devlaptop-live-playback-and-asio.md` steps 1 to 5; the effects exports in `2026-11-23-devlaptop-effects.md` |
+| 3 | **Lynx machine: ASIO and M0** | Same report steps 6 and 7 (first ever ASIO run), then `2026-11-20-M0-stepB-checklist.md` |
+| 4 | **Devices on real hardware** | `docs/test-reports/2026-11-25-devlaptop-gui-devices-log.md`: plug a device in and out; play with a browser playing |
+| 5 | **Default driver: keep ASIO, exclusive, shared; or Shared first?** | Shared never silences other programs but is not bit-exact (D-038, D-018) |
+| 6 | **Per-user installer?** | Would put the log beside an installed program and need no admin rights; needs one download (NSIS) or a WiX change |
+| 7 | **"GPLv3 or later", or version 3 only?** | Claude chose "or later" (D-036) |
+| 8 | **Proposed decisions and open questions** | D-030 to D-034, D-037, D-038; Q7 standing approval to commit and push; Q13 sample-rate conversion at import |
+| 9 | **Rewrite the git history?** | An old wording he may want gone (asked 2026-11-23). Needs a force-push; sooner is better. Yes or no |
+
+Also open, lower: develop on the Lynx machine long term (Q2); a free VST3 instrument on the dev
+machine (Q6); GUI feel of mouse editing, import, export, paste and the piano-roll wheel.
 
 ## Next actions, in order
 
 1. Wait for Dzyan's listening and Lynx results (blockers 1 and 2). Fix what fails. Record results
    in `07-hardware-and-testing.md` and the outcome of claims T3/T4 in `09-open-questions.md`.
 2. Playback follow-ups that need no hardware: loop playback; send effect-knob drags as they move
-   (today one command on release) with undo grouping; a real device picker in Settings (needs
-   `audio.devices` in the engine's command table); hold the device open between stop and play.
+   (today one command on release) with undo grouping; hold the device open between stop and play.
 3. After his first listen: the quality-for-CPU candidates in D-033 (modulate all 16 reverb lines,
    oversample the tape saturation), judged by ear.
 4. Record (audio input, latency-compensated) and the metronome: M2's remaining transport work.
 5. Instruments and monitoring (M3) render inside the callback, not the feeder (D-034).
 
-6. For every later release: bump `version` in `app/src-tauri/tauri.conf.json` and `Cargo.toml`,
-   re-run `tools/third-party-notices.ps1` if dependencies changed, build the installer, tag the
-   commit `v<version>` and attach the installer to a GitHub release made from that tag (the tag
-   is the installer's source, which the GPL requires to stay available).
+6. For every later release, in this order: bump `version` in `Cargo.toml`,
+   `app/src-tauri/tauri.conf.json` and `app/package.json`; re-run `tools/third-party-notices.ps1`
+   if dependencies changed; **commit**; only then build the installer, so that its log headers
+   name that commit; tag the commit `v<version>`, push, and attach the installer to a GitHub
+   release made from the tag (the tag is the installer's source, which the GPL requires to stay
+   available).
+7. Logging follow-ups (D-037): record and MIDI input will need their own `AUDIO`-style lines;
+   `crucible report` should say the power plan and whether the laptop is on battery.
+8. GUI test follow-ups (D-038): checks for the timeline (clip drag, trim, box select), the piano
+   roll, the effect editor and the five layouts; a run at 125% and 150% display scale.
+9. Controls that left the window come back with their engine side: record and arm, loop,
+   metronome, loudness, mono, reference A/B, instrument and plugin pickers, MIDI settings.
 
 Plugins in the engine still wait for M0 to pass on real hardware. Every new feature starts as a
 command row in a table, then gets its GUI.
@@ -147,21 +169,22 @@ After adding an error code: `cargo run -p crucible-cli -- codes --markdown` and 
 
 | Path | What | Verified how |
 |---|---|---|
-| `crates/crucible-audio-io` | SEAM 1. Lists audio devices via cpal. Exclusive mode via `wasapi`: capability probe, timing test, output stream. `output.rs`: one `open_output` for ASIO and shared mode (cpal) and exclusive. `convert.rs` float-to-device conversion (bit-exact with import) | Ran on dev workstation. Conversion unit-tested. Exclusive and shared streams played the demo song with 0 dropouts. **ASIO stream never run** (no driver here) |
+| `crates/crucible-audio-io` | SEAM 1. `wasapi_endpoints.rs`: the device list with rates and users, plug detection. Lists audio devices in full via cpal (`audio.probe`). Exclusive mode via `wasapi`: capability probe, timing test, output stream. `output.rs`: one `open_output` for ASIO and shared mode (cpal) and exclusive. `convert.rs` float-to-device conversion (bit-exact with import) | Ran on dev workstation. Conversion unit-tested. Exclusive and shared streams played the demo song with 0 dropouts. **ASIO stream never run** (no driver here) |
 | `crates/crucible-midi-io` | SEAM 1. Lists MIDI inputs via midir | Ran; this machine has none |
 | `crates/crucible-plugin-host` | Finds `.vst3` bundles, probes each in a child process with a timeout. `plugin_paths` is SEAM 2 | Unit tests incl. simulated crash/hang; fake broken bundles |
-| `crates/crucible-diagnostics` | Error codes (`codes.rs`), session log (`session.rs`), machine facts (`system.rs`), Windows crash handler and minidumps (`platform_windows.rs`, the crate's only OS code) | Unit tests, including a child process that really crashes. End-to-end with a fake crashing VST3 (see session log) |
+| `crates/crucible-diagnostics` | Error codes (`codes.rs`), session log (`session.rs`), the build's commit (`build.rs`), machine facts (`system.rs`), Windows crash handler and minidumps (`platform_windows.rs`, the crate's only OS code) | Unit tests, including a child process that really crashes. End-to-end with a fake crashing VST3 (see session log) |
 | `crates/crucible-project` | Project model as plain data; atomic save; load with validation; crash journal | Unit tests: round trip, foreign folder refused, newer format refused, damaged file refused, journal |
-| `crates/crucible-engine` | `command.rs`: command tables, parser, canonical text form. `lib.rs`: project and track commands, undo, redo, history, journal replay, `sync` change lists. `clips.rs`: clip, note, clipboard commands. `audio.rs`: import, place, peaks, mixer, `render`, export. `fx.rs`: effect commands. `play.rs`: live playback (feeder thread, queue, callback), `transport.*`, `audio.output` | Unit tests (27), CLI, browser, real devices |
+| `crates/crucible-engine` | `command.rs`: command tables, parser, canonical text form. `lib.rs`: project and track commands, undo, redo, history, journal replay, `sync` change lists. `clips.rs`: clip, note, clipboard commands. `audio.rs`: import, place, peaks, mixer, `render`, export. `fx.rs`: effect commands. `play.rs`: live playback (feeder thread, queue, callback), `transport.*`, `audio.output`, the `AUDIO` log lines. `trail.rs`: command outcomes in the log, `mark`, `log.ui`, `log.snapshot` (D-037). `devices.rs`: `audio.devices`, `audio.changes` (D-038) | Unit tests (31), CLI, browser, real devices |
 | `crates/crucible-dsp` | Built-in effects: `reverb.rs` (FDN), `convolve.rs` (IR Reverb), `delay.rs` (Delay/Echo), `filter.rs`, `math.rs` (deterministic exp/ln/sin), parameter tables in `lib.rs` | 15 unit tests (decay per band, convolution against direct, timing, no allocation, determinism, block-size independence including going idle, tail hand-over); CPU bench with `--ignored` |
 | `crates/crucible-cli` | The `crucible` binary. Host commands (help, version, codes, logs, report, diag, audio.devices, audio.test, midi.inputs, plugin.scan, run) joined with the engine's. Modes: one command, `-c`, `run`, `shell`, `--json`, `--project` | Ran on dev workstation, including each error path |
-| `app/src-tauri` | The window `crucible-app.exe`: Tauri 2 shell, one `exec` command, help for engine commands | Built release; launched |
-| `app/src` | UI: `main.ts` (top bar, headers, keys, import), `timeline.ts`, `panels.ts` (mixer, piano roll, clip editor, console), `dialogs.ts` (export, settings), `effects.ts` (effect picker and editor), `store.ts`, `engine.ts` (the bridge, change-list merge, command queue), `transport.ts` (play, stop, seek, playhead and meters from `transport.status`), `wave.ts` (waveforms), `layout.ts`, `demo.ts` (stand-ins) | Driven in the browser pane against the real engine |
+| `app/src-tauri` | The window `crucible-app.exe`: Tauri 2 shell, one `exec` command, help for engine commands, the `report` command (starts `crucible.exe report`), a watchdog for slow commands, window events into the log | Built release; driven through WebView2's debugging port with real clicks and keys |
+| `app/src` | UI: `main.ts` (top bar, headers, keys, import), `timeline.ts`, `panels.ts` (mixer, piano roll, clip editor, console), `dialogs.ts` (export, settings), `effects.ts` (effect picker and editor), `store.ts`, `engine.ts` (the bridge, change-list merge, command queue), `devices.ts` (the device list, plug notices, the Audio page of Settings), `trail.ts` (clicks, keys, messages and errors into the log, D-037), `transport.ts` (play, stop, seek, playhead and meters from `transport.status`), `wave.ts` (waveforms), `layout.ts`, `demo.ts` (stand-ins) | Driven in the browser pane against the real engine |
 | `spikes/m0-omnisphere` | THROWAWAY `m0-play`: load a plugin, editor window, live MIDI, shared or `--exclusive` output, state save/restore, offline render | Error paths only. **No real plugin yet** |
 
 ## Standing approvals
 
-None standing for commits or pushes. One-off, 2026-11-23: commit, push, make the repo public and
+None standing for commits or pushes. One-off, 2026-11-25: commit, push and release `v0.0.2`
+("go and push this and installer up to Git"). One-off, 2026-11-23: commit, push, make the repo public and
 publish release `v0.0.1` with the installer ("Go ahead and push it along with installer to public
 repo"). Downloads approved 2026-11-23: the ASIO SDK, LLVM and WiX
 (done, see `10-references.md`); anything else still needs his yes. 2026-11-20 Dzyan asked to push the project to his personal repo; that covered the
@@ -189,6 +212,50 @@ the 2026-11-21 batch (mouse editing, layouts, fonts, green, research). Ask befor
 Related: `..\music-editor` is Dzyan's own MIT Rust audio editor with reusable DSP and loudness code.
 
 ## Session log
+
+### 2026-11-25, Stop and fader faults, real devices, one log file, GUI test (Claude Fable 5.2)
+
+- Dzyan, after his first real use on another PC: Stop did not work and the mixer faders shook
+  during playback; "Can you not test GUI changes ... These are the kind of basic things I want
+  you to catch"; remove the demo content; show devices and their sample rate accurately; defeat
+  or at least detect programs taking the sound driver; volume sliders by the tracks; one log file
+  in the program's folder, written live, overwritten on restart. D-038, and D-037's addition.
+- Reproduced both faults in the real window by forcing dropouts: the page was rebuilt on every
+  dropout count. Fixed at the root (no rebuild for a number; no rebuild while a mouse button is
+  held; fader place from CSS). Likely cause of the dropout count on his PC fixed too: the queue
+  now sizes itself from what the driver really asks for.
+- `tools/gui-test.ps1`: 34 checks on the real window with human-length clicks. It found, before
+  he could: the device lists in Settings collapsed to nothing; the master fader 3 px out of line.
+- Out: demo song, stand-in buttons, fake plugins and devices (`demo.ts` deleted). In: real device
+  list, plug detection, "in use by", header volume sliders, `audio.devices`, `audio.changes`,
+  `log.path`; the old full listing is now `audio.probe`.
+- Log: `crucible-app.log` beside the program. `%LOCALAPPDATA%\Crucible\logs` is no longer
+  written; its old files are left alone.
+- Committed, pushed and released as `v0.0.2` the same day at his word. Report:
+  `docs/test-reports/2026-11-25-devlaptop-gui-devices-log.md`.
+
+### 2026-11-23 (night), logs that tell the whole session (Claude Fable 5.2)
+
+- Dzyan: design "very solid log and output files": from another PC he must be able to send one
+  file showing "basically everything I was doing, what was happening behind the scenes", enough
+  to work out what to fix. "Is that in place?" It was not: the log had command text, errors and
+  crashes only. D-037 records the design; `docs/11-error-codes.md` the line types and the
+  three-step procedure (F9, Create report file, send).
+- Built: command outcomes and timing (`trail.rs`), `mark`, `log.ui`, `log.snapshot`, playback
+  lines and dropout causes (`play.rs`), the window's trail (`app/src/trail.ts`), F9, the report
+  button, the window's `report` command and watchdog, the commit in log headers (`build.rs`),
+  `report --out`, marks and problems kept when a long log is cut, three new codes (W1005, E1006,
+  E9003). Version 0.0.2.
+- Found on the way: the window's log never said which device playback opened or whether it
+  dropped out; `crucible report` run from Program Files had nowhere to write but the log folder;
+  the one-shot playback health line said "silent" whatever was playing (fixed before release).
+- Tested: the real window through WebView2's debugging port (real clicks, keys, F9, a deliberate
+  error, the report, closing while playing); dropouts injected by freezing the mixing thread.
+  Report: `docs/test-reports/2026-11-23-devlaptop-logging-and-report.md`.
+- This laptop's Desktop is inside OneDrive, so a report made with the button here is synced.
+  `report --out <folder>` in the Console tab writes elsewhere.
+- Not committed. `dist/` holds the 0.0.2 build; its headers say "commit 62b5c38, plus
+  uncommitted changes", which is true. Rebuild after the commit for the release.
 
 ### 2026-11-23 (evening), licence and overlapping clips (Claude Fable 5.2)
 

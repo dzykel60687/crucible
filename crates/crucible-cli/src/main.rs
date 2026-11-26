@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use crucible_diagnostics::{self as diag, Code, DawError};
 use crucible_engine::command::{self, opt, req};
-use crucible_engine::{Args, Effect, Engine, Kind, Reply, Spec};
+use crucible_engine::{Args, Effect, Engine, Kind, Reply, Spec, trail};
 use serde_json::json;
 use std::fmt::Write as _;
 use std::io::{BufRead, IsTerminal, Write as _};
@@ -45,8 +45,7 @@ const PROBE_SUBCOMMAND: &str = "probe-plugin";
 /// Scripts may run scripts, but not forever.
 const MAX_SCRIPT_DEPTH: u8 = 8;
 /// How many recent logs `crucible report` includes, and how big each may be in it.
-const REPORT_LOGS: usize = 8;
-const REPORT_MAX_BYTES: usize = 300 * 1024;
+const REPORT_MAX_BYTES: usize = 600 * 1024;
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -130,11 +129,15 @@ struct Cli {
 impl Cli {
     /// Run one command from either table.
     fn exec(&mut self, tokens: &[String]) -> Result<Reply, DawError> {
+        // The log gets the command, then its outcome and how long it took (D-037).
+        let stamp = trail::begin(tokens);
+        let result = self.exec_quietly(tokens);
+        trail::end(stamp, &result);
+        result
+    }
+
+    fn exec_quietly(&mut self, tokens: &[String]) -> Result<Reply, DawError> {
         let name = alias(tokens.first().map(String::as_str).unwrap_or(""));
-        // A window polls transport.status many times a second while playing.
-        if name != "transport.status" {
-            diag::info(format!("> {}", tokens.join(" ")));
-        }
         if let Some(spec) = command::find(HOST, name) {
             let args = command::parse(spec, &tokens[1..])?;
             return (spec.run)(self, &args);
@@ -247,7 +250,7 @@ static HOST: &[Spec<Cli>] = &[
     Spec { name: "logs", args: &[], help: "Show where logs are kept and list the recent ones.", effect: Effect::Read, run: logs },
     Spec {
         name: "report",
-        args: &[opt("no-plugins", Kind::Bool, "skip the plugin scan")],
+        args: &[opt("no-plugins", Kind::Bool, "skip the plugin scan"), opt("out", Kind::Text, "folder to write the report in (default: the current folder)"), opt("include", Kind::Text, "another log file to add (the window passes its own)")],
         help: "Run diag, then gather it and the recent logs into ONE file to send.",
         effect: Effect::System,
         run: report,
@@ -260,9 +263,9 @@ static HOST: &[Spec<Cli>] = &[
         run: diag_cmd,
     },
     Spec {
-        name: "audio.devices",
+        name: "audio.probe",
         args: &[],
-        help: "List audio devices, including what each accepts in exclusive mode.",
+        help: "Every audio device in full: drivers, formats, buffer sizes, exclusive mode (audio.devices is the short list).",
         effect: Effect::System,
         run: audio_devices,
     },
@@ -332,7 +335,8 @@ fn version(_: &mut Cli, _: &Args) -> Result<Reply, DawError> {
     let fp = std::env::current_exe().ok().and_then(|e| diag::exe_fingerprint(&e)).unwrap_or_else(|| "?".into());
     let kind = if cfg!(debug_assertions) { "debug build" } else { "release build" };
     let v = env!("CARGO_PKG_VERSION");
-    Ok(Reply::new(format!("Crucible {v} ({kind}), build fingerprint {fp}"), json!({ "version": v, "build": kind, "fingerprint": fp })))
+    let source = diag::source();
+    Ok(Reply::new(format!("Crucible {v} ({kind}), {source}, build fingerprint {fp}"), json!({ "version": v, "build": kind, "source": source, "fingerprint": fp })))
 }
 
 fn codes(_: &mut Cli, a: &Args) -> Result<Reply, DawError> {
@@ -469,12 +473,13 @@ fn run_script(cli: &mut Cli, a: &Args) -> Result<Reply, DawError> {
 
 // ---------------------------------------------------------------- logs and report
 
-/// Files in the log folder, newest first.
-fn recent_logs(dir: &Path) -> Vec<(std::time::SystemTime, PathBuf, u64)> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
-    let mut v: Vec<_> = entries
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "txt" || x == "dmp"))
+/// Logs and crash dumps in the folders a log can be in, newest first.
+fn recent_logs() -> Vec<(std::time::SystemTime, PathBuf, u64)> {
+    let mut v: Vec<_> = diag::log_dirs()
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "log" || x == "dmp"))
         .filter_map(|e| {
             let m = e.metadata().ok()?;
             Some((m.modified().ok()?, e.path(), m.len()))
@@ -494,16 +499,16 @@ fn first_problem(path: &Path) -> Option<String> {
 }
 
 fn logs(_: &mut Cli, _: &Args) -> Result<Reply, DawError> {
-    let dir = diag::log_dir().ok_or_else(|| DawError::new(Code::LogUnavailable, "this system has no per-user data folder"))?;
-    let mut text = format!("Log folder: {}\n", dir.display());
-    let files = recent_logs(&dir);
+    let dirs = diag::log_dirs();
+    let mut text = format!("Logs are kept beside the program, or in the per-user folder when that cannot be written:\n{}", dirs.iter().map(|d| format!("  {}\n", d.display())).collect::<String>());
+    let files = recent_logs();
     if files.is_empty() {
         text.push_str("No logs yet.");
     }
     for (t, p, len) in files.iter().take(20) {
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let _ = writeln!(text, "  {:>9}  {:>8}  {name}", age(*t), human_size(*len));
-        if p.extension().is_some_and(|x| x == "txt")
+        if p.extension().is_some_and(|x| x == "log")
             && let Some(problem) = first_problem(p)
         {
             let _ = writeln!(text, "                       -> {problem}");
@@ -513,18 +518,45 @@ fn logs(_: &mut Cli, _: &Args) -> Result<Reply, DawError> {
         text.push_str("To send everything in one file: crucible report");
     }
     let data: Vec<_> = files.iter().take(20).map(|(_, p, len)| json!({ "file": p, "bytes": len })).collect();
-    Ok(Reply::new(text.trim_end().to_string(), json!({ "folder": dir, "files": data })))
+    Ok(Reply::new(text.trim_end().to_string(), json!({ "folders": dirs, "files": data })))
 }
 
 fn report(_: &mut Cli, a: &Args) -> Result<Reply, DawError> {
-    println!("Collecting a machine report. The plugin scan can take a minute...");
+    println!("Collecting a machine report.{}", if a.flag("no-plugins") == Some(true) { "" } else { " The plugin scan can take a minute..." });
     diag_text(a)?;
-    let dir = diag::log_dir().ok_or_else(|| DawError::new(Code::LogUnavailable, "this system has no per-user data folder"))?;
-    let files = recent_logs(&dir);
+    let mut files = recent_logs();
+    // A log handed over by name (the window's own) and the one before it, wherever they are.
+    if let Some(extra) = a.text("include").map(PathBuf::from) {
+        let before = extra.with_file_name(extra.file_name().map(|n| n.to_string_lossy().replace(".log", ".previous.log")).unwrap_or_default());
+        for p in [extra, before] {
+            if !files.iter().any(|f| f.1 == p)
+                && let Ok(m) = p.metadata()
+            {
+                files.push((m.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH), p, m.len()));
+            }
+        }
+        files.sort_by_key(|f| std::cmp::Reverse(f.0));
+    }
 
     let mut out = String::from("Crucible problem report\n");
-    let _ = writeln!(out, "Contains this run's machine check, then the {REPORT_LOGS} most recent logs, newest first.\n");
-    let _ = writeln!(out, "Crash dumps in the log folder (send the newest one too, if it matches a crash below):");
+    let fp = std::env::current_exe().ok().and_then(|e| diag::exe_fingerprint(&e)).unwrap_or_else(|| "?".into());
+    let _ = writeln!(out, "made by  : crucible {}, {}, build fingerprint {fp}", env!("CARGO_PKG_VERSION"), diag::source());
+    let _ = writeln!(out, "contains : this run's machine check (in the newest log below), this machine's audio output choice,");
+    let _ = writeln!(out, "           then each program's log of this run and of the run before, newest first. No audio.");
+    let _ = writeln!(out, "privacy  : names this computer, its user folder, its audio devices and the projects and files that");
+    let _ = writeln!(out, "           were opened. Nothing is sent by itself: you choose who gets this file.");
+    let _ = writeln!(out, "\nHow to read a log");
+    let _ = writeln!(out, "  > text        a command, typed or sent by the window");
+    let _ = writeln!(out, "  < ok / FAILED its outcome, how long it took and what it answered");
+    let _ = writeln!(out, "  UI            what the person did in the window (did), what it showed them (saw), stalls (slow)");
+    let _ = writeln!(out, "  MARK          the person's own note at the moment something went wrong");
+    let _ = writeln!(out, "  AUDIO         playback: the device opened, health every ten seconds, edits taken over, stop");
+    let _ = writeln!(out, "  WARN, ERROR   coded problems (docs/11-error-codes.md); PANIC and CRASH are bugs or plugin crashes");
+    let _ = writeln!(out, "  A log with no 'finished:' line at its end was cut short: a crash, a kill or a power cut.");
+    let choice = diag::data_dir().map(|d| d.join("audio-output.json"));
+    let _ = writeln!(out, "\nAudio output choice ({}):", choice.as_ref().map_or("?".to_string(), |c| c.display().to_string()));
+    let _ = writeln!(out, "  {}", choice.and_then(|c| std::fs::read_to_string(c).ok()).unwrap_or_else(|| "never set: automatic (ASIO if installed, else exclusive, else shared)".into()));
+    let _ = writeln!(out, "\nCrash dumps (send the newest one too, if it matches a crash below):");
     let dumps: Vec<_> = files.iter().filter(|f| f.1.extension().is_some_and(|x| x == "dmp")).collect();
     if dumps.is_empty() {
         let _ = writeln!(out, "  none");
@@ -532,7 +564,7 @@ fn report(_: &mut Cli, a: &Args) -> Result<Reply, DawError> {
     for (t, p, len) in &dumps {
         let _ = writeln!(out, "  {}  {}  {}", age(*t), human_size(*len), p.display());
     }
-    for (_, p, len) in files.iter().filter(|f| f.1.extension().is_some_and(|x| x == "txt")).take(REPORT_LOGS) {
+    for (_, p, len) in files.iter().filter(|f| f.1.extension().is_some_and(|x| x == "log")) {
         let _ = writeln!(out, "\n\n==================== {} ({}) ====================", p.display(), human_size(*len));
         match std::fs::read(p) {
             Ok(bytes) => out.push_str(&clip(&String::from_utf8_lossy(&bytes))),
@@ -542,17 +574,27 @@ fn report(_: &mut Cli, a: &Args) -> Result<Reply, DawError> {
         }
     }
 
+    // Where it goes: the folder asked for, else the folder this was run from; if that cannot be
+    // written (Program Files), the Desktop; last, the log folder.
     let name = format!("crucible-report-{}.txt", diag::file_stamp());
-    let here = std::env::current_dir().map(|d| d.join(&name)).unwrap_or_else(|_| PathBuf::from(&name));
-    let path = match std::fs::write(&here, &out) {
-        Ok(()) => here,
-        Err(e) => {
-            diag::info(format!("could not write the report to {}: {e}; using the log folder", here.display()));
-            let fallback = dir.join(&name);
-            std::fs::write(&fallback, &out).map_err(|e| DawError::new(Code::FileWrite, format!("{}: {e}", fallback.display())))?;
-            fallback
+    let first = a.text("out").map(PathBuf::from).or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+    let mut path = first.join(&name);
+    if let Err(e) = std::fs::write(&path, &out) {
+        diag::info(format!("could not write the report to {}: {e}", path.display()));
+        let fallbacks = [diag::report_dir(), diag::data_dir()];
+        let mut written = Err(DawError::new(Code::FileWrite, format!("{}: {e}", path.display())));
+        for folder in fallbacks.into_iter().flatten() {
+            path = folder.join(&name);
+            match std::fs::write(&path, &out) {
+                Ok(()) => {
+                    written = Ok(());
+                    break;
+                }
+                Err(e) => written = Err(DawError::new(Code::FileWrite, format!("{}: {e}", path.display()))),
+            }
         }
-    };
+        written?;
+    }
     diag::info(format!("report written to {}", path.display()));
     let mut text = format!("Report written to:\n  {}\nSend that one file.", path.display());
     if let Some((_, newest, _)) = dumps.first() {
@@ -568,7 +610,10 @@ fn clip(text: &str) -> String {
     }
     let head_end = floor_char(text, 40 * 1024);
     let tail_start = floor_char(text, text.len() - (REPORT_MAX_BYTES - 40 * 1024));
-    format!("{}\n\n[... {} bytes cut from the middle ...]\n\n{}", &text[..head_end], tail_start - head_end, &text[tail_start..])
+    // The person's marks and every problem survive the cut, whatever happens to the rest.
+    let kept: String =
+        text[head_end..tail_start].lines().filter(|l| [" MARK ", " WARN ", " ERROR ", " PANIC ", " CRASH "].iter().any(|m| l.contains(m))).take(300).map(|l| format!("{l}\n")).collect();
+    format!("{}\n\n[... {} bytes cut from the middle; marks and problems from that part follow ...]\n{kept}[... end of the cut ...]\n\n{}", &text[..head_end], tail_start - head_end, &text[tail_start..])
 }
 
 fn floor_char(s: &str, mut i: usize) -> usize {
@@ -794,6 +839,12 @@ mod tests {
         assert!(c.starts_with("HEADER") && c.ends_with("THE-END") && c.contains("cut from the middle"));
         assert!(c.len() < REPORT_MAX_BYTES + 200);
         assert_eq!(clip("short"), "short");
+        // The person's marks and every problem in the cut part are kept; ordinary lines are not.
+        let filler = "12:00:00.000 +1.00s INFO  > track.list\n".repeat(REPORT_MAX_BYTES / 20);
+        let long = format!("HEADER\n{filler}12:00:01.000 +2.00s MARK  \"click on the snare\"\n12:00:02.000 +3.00s WARN  W2101 dropout\n{filler}THE-END");
+        let c = clip(&long);
+        assert!(c.contains("MARK  \"click on the snare\"") && c.contains("WARN  W2101 dropout"), "marks and problems survive the cut");
+        assert!(c.len() < REPORT_MAX_BYTES + 400);
     }
 
     #[test]

@@ -28,6 +28,7 @@ use crucible_audio_io as io;
 use crucible_diagnostics::{self as diag, Code, DawError};
 use crucible_project::{PPQ, Project};
 use serde_json::json;
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, mpsc};
@@ -112,8 +113,12 @@ impl Ring {
 /// Everything both threads and the caller can see. Atomics only on the callback's side.
 struct Shared {
     ring: Ring,
-    /// Samples the feeder keeps queued.
+    /// Samples the feeder keeps queued, at least.
     ahead: AtomicUsize,
+    /// The most samples the driver has asked for in one go. Drivers do not always say their
+    /// buffer size truthfully up front (shared mode and some ASIO drivers ask for more later),
+    /// so the queue is sized from what they actually take: see `want`.
+    asked: AtomicUsize,
     /// Queue position below which queued sound is thrown away, and the timeline frame that
     /// position stands for. Set by a seek.
     skip_to: AtomicUsize,
@@ -163,6 +168,7 @@ impl Session {
         let sh = Arc::new(Shared {
             ring: Ring::new(1 << 17),
             ahead: AtomicUsize::new(2 * (AHEAD_SECONDS * f64::from(p.sample_rate)) as usize),
+            asked: AtomicUsize::new(0),
             skip_to: AtomicUsize::new(0),
             seek_frame: AtomicU64::new(from),
             played: AtomicU64::new(from),
@@ -189,7 +195,14 @@ impl Session {
     /// The audio callback: interleaved stereo out of the queue. Real-time safe.
     pub(crate) fn callback(&self) -> io::OutputCallback {
         let sh = self.sh.clone();
+        // A driver's request can arrive as several calls one straight after another; together
+        // they are one request. Calls less than a millisecond apart are counted as one.
+        let (mut burst, mut before) = (0usize, Instant::now());
         Box::new(move |buf: &mut [f32]| {
+            let now = Instant::now();
+            burst = if now.duration_since(before) < Duration::from_millis(1) { burst + buf.len() } else { buf.len() };
+            before = now;
+            sh.asked.fetch_max(burst, Relaxed);
             let skip = sh.skip_to.load(Relaxed);
             if sh.ring.tail.load(Relaxed) < skip {
                 sh.ring.tail.store(skip, Relaxed);
@@ -250,6 +263,14 @@ impl Drop for Session {
     }
 }
 
+impl Shared {
+    /// How many samples the feeder keeps queued: the configured amount, or three of the driver's
+    /// largest requests if that is more, within what the queue can hold.
+    fn want(&self) -> usize {
+        self.ahead.load(Relaxed).max(3 * self.asked.load(Relaxed)).min(self.ring.buf.len() - BLOCK * 4)
+    }
+}
+
 /// The feeder thread. Owns the mixer and the open clip files.
 fn feed(mut m: Mixer, from: u64, rx: mpsc::Receiver<Msg>, sh: &Shared) {
     let _priority = io::AudioPriority::join();
@@ -280,7 +301,7 @@ fn feed(mut m: Mixer, from: u64, rx: mpsc::Receiver<Msg>, sh: &Shared) {
                 Err(mpsc::TryRecvError::Empty) => break,
             }
         }
-        if failed || sh.ring.fill() + BLOCK * 2 > sh.ahead.load(Relaxed) {
+        if failed || sh.ring.fill() + BLOCK * 2 > sh.want() {
             std::thread::park_timeout(Duration::from_millis(1));
             continue;
         }
@@ -337,7 +358,7 @@ pub(crate) struct OutputChoice {
 }
 
 fn settings_file() -> Option<PathBuf> {
-    Some(diag::log_dir()?.parent()?.join("audio-output.json"))
+    Some(diag::data_dir()?.join("audio-output.json"))
 }
 
 impl OutputChoice {
@@ -393,24 +414,166 @@ impl OutputChoice {
 pub(crate) struct Player {
     session: Session,
     out: io::Output,
+    began: Instant,
+    /// What the log has been told so far, so it hears of each dropout once (`watch`).
+    told: Cell<Told>,
 }
+
+#[derive(Clone, Copy)]
+struct Told {
+    at: Instant,
+    /// Dropouts by cause, as last reported: queue ran dry, driver overruns, driver timeouts.
+    counts: (u64, u64, u64),
+    /// Loudest master sample since the last health line.
+    peak: f32,
+    failed: bool,
+    /// When a dropout line was last written: one a second at most, however many there are.
+    warned: Option<Instant>,
+    /// Late wake-ups of the driver's thread, as last reported.
+    late: u64,
+    /// Whether the log has been told that the driver asks for more than it reported.
+    told_asked: bool,
+}
+
+/// How often a health line goes into the log while playing.
+const HEALTH_EVERY: Duration = Duration::from_secs(10);
 
 impl Player {
     fn start(p: &Project, folder: Option<&Path>, from: u64, choice: &OutputChoice) -> Result<Player, DawError> {
         let session = Session::start(p, folder, from)?;
         let req = io::OutputRequest { driver: choice.driver, device: choice.device.clone(), sample_rate: p.sample_rate, buffer_frames: choice.buffer, channels: 2 };
-        let out = io::open_output(&req, &mut || session.callback())?;
+        diag::event("AUDIO", format!("opening the output | asked for: {}", choice.text()));
+        let others = crate::devices::others_on(choice.device.as_deref());
+        if !others.is_empty() {
+            diag::event("AUDIO", format!("other programs with sound on this output: {}", others.join(", ")));
+        }
+        let mut out = io::open_output(&req, &mut || session.callback()).map_err(|mut e| {
+            // "In use" is far more useful with a name beside it.
+            if e.code == Code::DeviceInUse && !others.is_empty() {
+                e.message.push_str(&format!(" Programs with sound on it now: {}.", others.join(", ")));
+            }
+            e
+        })?;
+        if out.driver() == io::Driver::Exclusive && !others.is_empty() {
+            out.notes.push(format!("{} also had sound on this output. Exclusive mode silences other programs while Crucible plays; choose the Shared driver in Settings to let them carry on.", others.join(", ")));
+        }
         let ahead = ((AHEAD_SECONDS * f64::from(p.sample_rate)) as usize).max(3 * out.info().buffer_frames as usize);
         session.sh.ahead.store(2 * ahead, Relaxed);
         session.wake();
         for n in &out.notes {
             diag::info(format!("playback: {n}"));
         }
-        Ok(Player { session, out })
+        let pl = Player { session, out, began: Instant::now(), told: Cell::new(Told { at: Instant::now(), counts: (0, 0, 0), peak: 0.0, failed: false, warned: None, late: 0, told_asked: false }) };
+        let rate = f64::from(p.sample_rate);
+        diag::event(
+            "AUDIO",
+            format!(
+                "start | {} | queue {:.0} ms ahead | from {:.2} s | {} tracks, {} clips, {} effects | sound ends at {:.1} s",
+                pl.device_text(),
+                ahead as f64 * 1000.0 / rate,
+                from as f64 / rate,
+                p.tracks.len(),
+                p.clips.len(),
+                p.tracks.iter().map(|t| t.effects.len()).sum::<usize>(),
+                pl.session.end as f64 / rate
+            ),
+        );
+        Ok(pl)
+    }
+
+    /// Dropouts by cause: the queue ran dry (mixing fell behind), the driver reported an
+    /// overrun, the driver never asked for sound.
+    fn counts(&self) -> (u64, u64, u64) {
+        (self.session.sh.underruns.load(Relaxed), self.out.driver_xruns(), if self.out.driver() == io::Driver::Exclusive { self.out.stats().timeouts } else { 0 })
     }
 
     fn dropouts(&self) -> u64 {
-        self.session.sh.underruns.load(Relaxed) + self.out.driver_xruns() + if self.out.driver() == io::Driver::Exclusive { self.out.stats().timeouts } else { 0 }
+        let (queue, driver, timeouts) = self.counts();
+        queue + driver + timeouts
+    }
+
+    /// The loudest master sample on each side since this was last asked, and start again.
+    fn take_peak(&self) -> [f32; 2] {
+        let p = &self.session.sh.peak;
+        [f32::from_bits(p[0].swap(0, Relaxed)), f32::from_bits(p[1].swap(0, Relaxed))]
+    }
+
+    fn seconds(&self) -> f64 {
+        self.session.position() as f64 / f64::from(self.session.rate)
+    }
+
+    /// The numbers that say how playback is coping, in one phrase for the log.
+    fn health(&self) -> String {
+        let (load, worst) = self.load();
+        let (sh, stats) = (&self.session.sh, self.out.stats());
+        format!(
+            "dropouts {}, late wake-ups {}, mixing {load:.1}% of one core, slowest step {worst:.0}% of its slot, queue {:.0}% full, longest driver gap {:.1} ms, edits taken over {}",
+            self.dropouts(),
+            stats.late_wakeups,
+            100.0 * sh.ring.fill() as f64 / sh.want().max(1) as f64,
+            stats.worst_gap_ms,
+            sh.swaps.load(Relaxed)
+        )
+    }
+
+    /// Keep the log informed while playing: dropouts when they are first seen, with their cause
+    /// (one line a second at most, so a machine that cannot keep up does not flood the log); a
+    /// device failure once; and a health line every ten seconds. `last` writes whatever is still
+    /// unreported, for the end of playback. Called from
+    /// `transport.status`, which the window runs many times a second, and from the one-shot
+    /// wait loop. Never from an audio thread: those only count (the real-time rule).
+    fn watch(&self, peak: Option<[f32; 2]>, last: bool) {
+        let mut t = self.told.get();
+        if let Some(p) = peak {
+            t.peak = t.peak.max(p[0]).max(p[1]);
+        }
+        let now = self.counts();
+        if now != t.counts && (last || t.warned.is_none_or(|w| w.elapsed() >= Duration::from_secs(1))) {
+            let mut why = Vec::new();
+            if now.0 > t.counts.0 {
+                why.push(format!("the queue ran dry {} time(s): mixing fell behind", now.0 - t.counts.0));
+            }
+            if now.1 > t.counts.1 {
+                why.push(format!("the driver reported {} overrun(s)", now.1 - t.counts.1));
+            }
+            if now.2 > t.counts.2 {
+                why.push(format!("the driver did not ask for sound {} time(s)", now.2 - t.counts.2));
+            }
+            diag::warn(Code::Dropout, format!("near {:.2} s of the song: {} | {}", self.seconds(), why.join("; "), self.health()));
+            (t.counts, t.warned) = (now, Some(Instant::now()));
+        }
+        // A late wake-up is a near miss: on record when it happens, but not a warning.
+        let stats = self.out.stats();
+        if stats.late_wakeups > t.late && (last || t.warned.is_none_or(|w| w.elapsed() >= Duration::from_secs(1))) {
+            diag::event("AUDIO", format!("the driver's thread woke late {} time(s) near {:.2} s | longest gap so far {:.1} ms | {}", stats.late_wakeups - t.late, self.seconds(), stats.worst_gap_ms, self.health()));
+            (t.late, t.warned) = (stats.late_wakeups, Some(Instant::now()));
+        }
+        if !t.failed
+            && let Some(err) = self.out.failure()
+        {
+            diag::error(err.code, format!("the audio device failed near {:.2} s of the song: {}", self.seconds(), err.message));
+            t.failed = true;
+        }
+        let (asked, reported) = (self.session.sh.asked.load(Relaxed) / 2, self.out.info().buffer_frames as usize);
+        if !t.told_asked && asked > reported + reported / 2 {
+            diag::event("AUDIO", format!("the driver asks for up to {asked} frames at a time, not the {reported} it reported; the queue now keeps {} frames ready", self.session.sh.want() / 2));
+            t.told_asked = true;
+        }
+        if t.at.elapsed() >= HEALTH_EVERY {
+            let peak = db(t.peak).map_or("silent".to_string(), |d| format!("{d:+.1} dBFS"));
+            diag::event("AUDIO", format!("at {:.1} s | {} | loudest since the last line {peak}", self.seconds(), self.health()));
+            (t.at, t.peak) = (Instant::now(), 0.0);
+        }
+        self.told.set(t);
+    }
+
+    /// End playback: put the totals in the log, then release the device.
+    fn finish(self, why: &str) -> Result<(), DawError> {
+        self.watch(None, true);
+        diag::event("AUDIO", format!("stop ({why}) | at {:.2} s of the song, {:.1} s after starting | {}", self.seconds(), self.began.elapsed().as_secs_f64(), self.health()));
+        let Player { session, out, .. } = self;
+        drop(session);
+        out.stop()
     }
 
     fn device_text(&self) -> String {
@@ -451,13 +614,41 @@ pub(crate) fn after_command(e: &mut Engine, file: bool, changed: bool) {
     } else if e.project.sample_rate != pl.session.rate {
         Some("the project's sample rate changed".to_string())
     } else {
-        pl.session.update(&e.project, e.folder.as_deref()).err().map(|err| err.to_string())
+        let t0 = Instant::now();
+        let result = pl.session.update(&e.project, e.folder.as_deref());
+        if result.is_ok() {
+            diag::event("AUDIO", format!("edit taken over near {:.2} s | new mixer built in {:.1} ms", pl.seconds(), t0.elapsed().as_secs_f64() * 1000.0));
+        }
+        result.err().map(|err| err.to_string())
     };
     if let Some(why) = stop_because {
-        diag::info(format!("playback stopped: {why}"));
-        e.player = None;
+        if let Some(pl) = e.player.take()
+            && let Err(err) = pl.finish(&why)
+        {
+            diag::warn(err.code, format!("releasing the audio device: {}", err.message));
+        }
         e.stop_note = Some(why);
     }
+}
+
+/// This machine's output choice as data, for the device list.
+pub(crate) fn choice_json(e: &mut Engine) -> serde_json::Value {
+    e.output().json()
+}
+
+/// One phrase for the log: where playback is, or that it is not running. `ago` moves the
+/// position back by that many seconds: a mark is typed a moment after the thing it is about.
+pub(crate) fn where_now(e: &Engine, ago: f64) -> String {
+    let Some(pl) = &e.player else { return "not playing".to_string() };
+    let at = (pl.seconds() - ago).max(0.0);
+    let beat = at * f64::from(pl.session.rate) / frames_per_beat(&e.project);
+    format!("playing, {at:.2} s into the song (beat {beat:.2}) through {} | {}", pl.device_text(), pl.health())
+}
+
+/// This machine's output choice and the ASIO drivers installed, for the log.
+pub(crate) fn output_text(e: &mut Engine) -> String {
+    let asio = io::asio_drivers();
+    format!("{} | ASIO drivers installed: {}", e.output().text(), if asio.is_empty() { "none".to_string() } else { asio.join("; ") })
 }
 
 fn transport_play(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
@@ -471,7 +662,10 @@ fn transport_play(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
         }
         return Ok(Reply::text(format!("Already playing through {}", pl.device_text())));
     }
-    e.player = None; // release the device before opening it again
+    // Release the device before opening it again.
+    if let Some(old) = e.player.take() {
+        old.finish("starting again")?;
+    }
     e.stop_note = None;
     let choice = e.output().with(a);
     let pl = Player::start(&e.project, e.folder.as_deref(), from.unwrap_or(0), &choice)?;
@@ -488,14 +682,16 @@ fn transport_play(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let limit = Duration::from_secs_f64((end.saturating_sub(from.unwrap_or(0)) as f64 / f64::from(pl.session.rate)) * 1.5 + 5.0);
     while pl.session.position() < end && pl.out.failure().is_none() && t0.elapsed() < limit {
         std::thread::sleep(Duration::from_millis(20));
+        pl.watch(Some(pl.take_peak()), false);
     }
     let played = pl.session.position().saturating_sub(from.unwrap_or(0)) as f64 / f64::from(pl.session.rate);
     let (summary, dropouts, failure) = (pl.summary(), pl.dropouts(), pl.out.failure());
     let data = json!({ "playing": false, "seconds": played, "dropouts": dropouts, "load_percent": pl.load().0, "worst_step_percent": pl.load().1, "device": pl.out.info(), "driver": pl.out.driver().name() });
-    drop(pl);
+    let stopped = pl.finish(if failure.is_some() { "the device failed" } else { "the end of the song" });
     if let Some(f) = failure {
         return Err(f);
     }
+    stopped?;
     Ok(Reply::new(format!("{text}\nPlayed {played:.1} s: {summary}"), data))
 }
 
@@ -504,9 +700,7 @@ fn transport_stop(e: &mut Engine, _: &Args) -> Result<Reply, DawError> {
     let fpb = frames_per_beat(&e.project);
     let (frame, summary) = (pl.session.position(), pl.summary());
     let data = json!({ "playing": false, "frame": frame, "beat": frame as f64 / fpb, "dropouts": pl.dropouts() });
-    let Player { session, out } = pl;
-    drop(session);
-    out.stop()?;
+    pl.finish("transport.stop")?;
     Ok(Reply::new(format!("Stopped at beat {:.2}: {summary}", frame as f64 / fpb), data))
 }
 
@@ -529,7 +723,8 @@ fn transport_status(e: &mut Engine, _: &Args) -> Result<Reply, DawError> {
     let sh = &pl.session.sh;
     let frame = pl.session.position();
     let (beat, seconds) = (frame as f64 / fpb, frame as f64 / f64::from(pl.session.rate));
-    let peak = [f32::from_bits(sh.peak[0].swap(0, Relaxed)), f32::from_bits(sh.peak[1].swap(0, Relaxed))];
+    let peak = pl.take_peak();
+    pl.watch(Some(peak), false);
     let tracks: Vec<_> = std::mem::take(&mut *sh.tracks.lock().unwrap_or_else(|p| p.into_inner())).into_iter().map(|(id, l, r)| json!({ "id": id, "peak": [db(l), db(r)] })).collect();
     let error = pl.out.failure().or_else(|| sh.error.lock().unwrap_or_else(|p| p.into_inner()).clone());
     let (load, worst) = pl.load();
@@ -723,6 +918,30 @@ mod tests {
         assert!(s.position() >= 13_000 && s.position() <= 13_001, "position {}", s.position());
         assert!(got.iter().any(|x| *x != 0.0));
         assert_eq!(s.sh.underruns.load(Relaxed), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A driver that asks for far more at a time than the 40 ms the queue starts with: a big
+    /// shared-mode or ASIO buffer, which drivers do not always report up front. Before
+    /// 2026-11-25 every such request ran the queue dry, so the dropout count climbed without
+    /// end. The queue has to grow to fit what the driver really takes.
+    #[test]
+    fn the_queue_grows_to_fit_a_driver_that_asks_for_big_buffers() {
+        let (e, dir) = song("big");
+        let s = Session::start(e.project(), e.folder(), 0).unwrap();
+        let mut cb = s.callback();
+        let mut buf = vec![0.0f32; 2 * 8192]; // 8,192 frames in one request: 171 ms at 48 kHz
+        assert!(buf.len() > s.sh.ahead.load(Relaxed), "the test needs a request larger than the starting queue");
+        cb(&mut buf); // the first request shows the queue what this driver takes
+        let t0 = Instant::now();
+        while s.sh.ring.fill() < buf.len() {
+            assert!(t0.elapsed() < Duration::from_secs(20), "the queue never grew: it holds {} of the {} samples asked for", s.sh.ring.fill(), buf.len());
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let before = s.sh.underruns.load(Relaxed);
+        cb(&mut buf);
+        assert_eq!(s.sh.underruns.load(Relaxed), before, "a request the queue had time to fill was still short");
+        assert!(buf.iter().any(|x| *x != 0.0), "the request was answered with silence");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

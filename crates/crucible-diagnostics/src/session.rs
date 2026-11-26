@@ -1,6 +1,11 @@
-//! The session log: one plain-text file per program run, in one known folder.
+//! The session log: one plain-text file per program, beside the program.
 //!
 //! Design choices, each for diagnosing problems on machines no developer can see:
+//! - **One file, where the program is.** `crucible-app.log` beside `crucible-app.exe`. Every run
+//!   starts it afresh (Dzyan, 2026-11-25). The run before is kept once, as
+//!   `crucible-app.previous.log`: after a crash the next start would otherwise erase the very
+//!   log that explains it. Where the program's folder cannot be written (Program Files), the
+//!   log goes to the per-user folder instead ([`data_dir`]).
 //! - **Write-through.** Every line goes to the file as it happens, not when the program
 //!   exits. If a plugin crashes the process, the log still holds everything up to the crash.
 //! - **Header first.** Program build, command line, computer, OS, CPU and memory come before
@@ -24,10 +29,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-/// Old logs beyond these counts are deleted when a new session starts.
-const KEEP_LOGS: usize = 200;
-const KEEP_DUMPS: usize = 10;
-
 struct State {
     file: Mutex<Option<File>>,
     path: Option<PathBuf>,
@@ -44,10 +45,20 @@ thread_local! {
     static REALTIME: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The per-user log folder: `%LOCALAPPDATA%\Crucible\logs` on Windows,
-/// `~/Library/Application Support/Crucible/logs` on macOS, `~/.local/share/Crucible/logs` on Linux.
-pub fn log_dir() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("Crucible").join("logs"))
+/// Crucible's per-user folder: `%LOCALAPPDATA%\Crucible` on Windows,
+/// `~/Library/Application Support/Crucible` on macOS, `~/.local/share/Crucible` on Linux. Holds
+/// this machine's settings, and the logs when the program's own folder cannot be written.
+pub fn data_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|d| d.join("Crucible"))
+}
+
+/// The folders a log can be in, in the order they are tried: the program's own, then the
+/// per-user one.
+pub fn log_dirs() -> Vec<PathBuf> {
+    let own = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+    let mut dirs: Vec<PathBuf> = own.into_iter().chain(data_dir()).collect();
+    dirs.dedup();
+    dirs
 }
 
 /// The current session's log file, if one could be created.
@@ -57,14 +68,14 @@ pub fn log_path() -> Option<PathBuf> {
 
 /// Start this run's log. Call first thing in `main`. Later calls do nothing.
 ///
-/// Creates `<log dir>/<program>-<label>-<local time>.txt`, writes the header, and installs the
+/// Creates `<program>.log` (see the module docs for where), writes the header, and installs the
 /// panic hook, the native crash handler and the bridge for the `log` facade.
 /// `label` is usually the command, e.g. `play-omnisphere`.
 pub fn start(program: &str, label: &str) -> Option<PathBuf> {
     if STATE.get().is_some() {
         return log_path();
     }
-    let opened = open_log_file(program, label);
+    let opened = open_log_file(program);
     let (file, path, open_error) = match opened {
         Ok((f, p)) => (Some(f), Some(p), None),
         Err(e) => (None, None, Some(e)),
@@ -110,6 +121,33 @@ pub fn dropped_realtime_records() -> u64 {
 /// Log file only.
 pub fn info(msg: impl AsRef<str>) {
     write_line("INFO", msg.as_ref());
+}
+
+/// Log file only, under a tag of its own instead of a level, so one kind of line can be picked
+/// out of a long log. Tags in use (five letters at most):
+/// - `UI`: what the person did in the window (clicks, keys, drags) and what it showed them.
+/// - `MARK`: a note the person dropped at the moment something went wrong (`mark` command).
+/// - `AUDIO`: playback start, health while playing, and stop.
+pub fn event(tag: &str, msg: impl AsRef<str>) {
+    write_line(tag, msg.as_ref());
+}
+
+/// The clock time `seconds` ago, in the form the log's own lines use: `21:42:07.123`.
+pub fn clock_before(seconds: f64) -> String {
+    let then = chrono::Local::now() - chrono::Duration::milliseconds((seconds.max(0.0) * 1000.0) as i64);
+    then.format("%H:%M:%S%.3f").to_string()
+}
+
+/// Which commit this program was built from, e.g. `commit 62b5c38cd830 of 2026-11-23`.
+/// See `build.rs` for its one limit.
+pub fn source() -> &'static str {
+    env!("CRUCIBLE_SOURCE")
+}
+
+/// Where a problem report is written when nobody chose a folder: the Desktop, so the person
+/// can find and send it; else Documents; else the log folder.
+pub fn report_dir() -> Option<PathBuf> {
+    [dirs::desktop_dir(), dirs::document_dir(), data_dir()].into_iter().flatten().find(|d| d.is_dir())
 }
 
 /// A block of text copied into the log as it is, under a heading. Log file only.
@@ -208,38 +246,37 @@ pub fn finish(result: anyhow::Result<()>) -> i32 {
 
 // ---------------------------------------------------------------- internals
 
-fn open_log_file(program: &str, label: &str) -> Result<(File, PathBuf), String> {
-    let dir = log_dir().ok_or("this system has no per-user data folder")?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
-    prune(&dir, "txt", KEEP_LOGS);
-    prune(&dir, "dmp", KEEP_DUMPS);
-    let clean = |s: &str| s.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect::<String>();
-    let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-    let base = if label.is_empty() { clean(program) } else { format!("{}-{}", clean(program), clean(label)) };
-    for n in 1..100 {
-        let name = if n == 1 { format!("{base}-{stamp}.txt") } else { format!("{base}-{stamp}-{n}.txt") };
-        let path = dir.join(name);
-        match File::create_new(&path) {
+/// `<program>.log` in the first folder that can be written. What the last run left there moves
+/// to `<program>.previous.log` (and its crash dump to `.previous.dmp`), replacing the one before.
+fn open_log_file(program: &str) -> Result<(File, PathBuf), String> {
+    let name: String = program.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    let mut refused = Vec::new();
+    for dir in log_dirs() {
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            refused.push(format!("{}: {e}", dir.display()));
+            continue;
+        }
+        // Can this folder be written at all? Asked before the old log is touched.
+        let probe = dir.join(format!("{name}.log.new"));
+        if let Err(e) = File::create(&probe) {
+            refused.push(format!("{}: {e}", dir.display()));
+            continue;
+        }
+        let _ = std::fs::remove_file(&probe);
+        for ext in ["log", "dmp"] {
+            let (now, before) = (dir.join(format!("{name}.{ext}")), dir.join(format!("{name}.previous.{ext}")));
+            if now.metadata().is_ok_and(|m| m.len() > 0) {
+                let _ = std::fs::remove_file(&before);
+                let _ = std::fs::rename(&now, &before);
+            }
+        }
+        let path = dir.join(format!("{name}.log"));
+        match File::create(&path) {
             Ok(f) => return Ok((f, path)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("creating {}: {e}", path.display())),
+            Err(e) => refused.push(format!("{}: {e}", path.display())),
         }
     }
-    Err(format!("too many logs named {base}-{stamp} in {}", dir.display()))
-}
-
-/// Keep the newest `keep` files with this extension.
-fn prune(dir: &Path, ext: &str, keep: usize) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case(ext)))
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-        .collect();
-    files.sort_by_key(|f| std::cmp::Reverse(f.0));
-    for (_, p) in files.into_iter().skip(keep) {
-        let _ = std::fs::remove_file(p);
-    }
+    Err(if refused.is_empty() { "this system has no folder for it".to_string() } else { refused.join("; ") })
 }
 
 fn write_header(program: &str, label: &str, path: Option<&Path>) {
@@ -251,6 +288,7 @@ fn write_header(program: &str, label: &str, path: Option<&Path>) {
         env!("CARGO_PKG_VERSION"),
         if cfg!(debug_assertions) { "debug build" } else { "release build" }
     ));
+    h.push(format!("source   : {}", source()));
     if let Some(exe) = &exe {
         let meta = std::fs::metadata(exe).ok();
         let size = meta.as_ref().map(|m| format!("{:.1} MB", m.len() as f64 / 1_048_576.0)).unwrap_or_else(|| "?".into());

@@ -117,7 +117,16 @@ svg { display: block; }
 .device { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); font-size: var(--fs-s); color: var(--text-dim); cursor: pointer; }
 .device:hover { border-color: var(--line-strong); }
 .device .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
-.device .xruns { color: var(--text-faint); }
+.device .xruns { color: var(--solo); flex: none; }
+.device #dev-text { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device .dot { flex: none; }
+.device.none .dot { background: var(--rec); }
+/* The volume slider in a track header: the mixer's fader lying down. */
+.hfader { position: relative; flex: 1; min-width: 40px; height: 24px; cursor: ew-resize; touch-action: none; }
+.hfader .rail { position: absolute; left: 4px; right: 4px; top: 10px; height: 4px; border-radius: 2px; background: var(--bg); }
+.hfader .fill { position: absolute; left: 4px; top: 10px; height: 4px; border-radius: 2px; background: var(--c); opacity: .75; width: calc((100% - 8px) * var(--p, 0.89)); }
+.hfader .thumb { position: absolute; top: 4px; left: calc(4px + (100% - 8px) * var(--p, 0.89)); width: 8px; height: 16px; margin-left: -4px; border-radius: 3px; background: var(--text-dim); box-shadow: 0 1px 0 #0006; }
+.hfader:hover .thumb { background: var(--text); }
 
 /* ------------------------------------------------------------------ arrange */
 #arrange { display: grid; grid-template-columns: var(--header-w) minmax(0, 1fr); min-height: 0; background: var(--bg); }
@@ -145,7 +154,7 @@ svg { display: block; }
 .tbtn.m.on { background: var(--mute); color: #06121f; }
 .tbtn.s.on { background: var(--solo); color: #1d1600; }
 .tbtn.r.on { background: var(--rec); color: #fff; }
-.knob-num { height: 24px; min-width: 64px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; background: var(--surface-2); font: 500 11px/1 var(--mono); color: var(--text-dim); cursor: ns-resize; touch-action: none; }
+.knob-num { height: 24px; min-width: 58px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; background: var(--surface-2); font: 500 11px/1 var(--mono); color: var(--text-dim); cursor: ns-resize; touch-action: none; }
 .knob-num:hover { color: var(--text); background: var(--surface-4); }
 .knob-num.pan { min-width: 44px; }
 .add-track { display: flex; gap: 6px; padding: 10px; }
@@ -179,7 +188,8 @@ svg { display: block; }
 .strip .sname { display: flex; align-items: center; gap: 6px; font-size: var(--fs-s); font-weight: 600; overflow: hidden; white-space: nowrap; }
 .strip .sname i { width: 8px; height: 8px; border-radius: 2px; background: var(--c); flex: none; }
 .strip .sname span { overflow: hidden; text-overflow: ellipsis; }
-.inserts { display: flex; flex-direction: column; gap: 3px; }
+/* A fixed height, so every strip's fader has the same travel and 0 dB lines up across the mixer. */
+.inserts { display: flex; flex-direction: column; gap: 3px; height: 66px; overflow-y: auto; scrollbar-width: thin; }
 .insert { height: 20px; border-radius: 4px; border: 1px solid var(--line-strong); background: transparent; color: var(--text-dim); font-size: var(--fs-xs); padding: 0 6px; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
 .insert.filled { background: var(--surface-4); border-color: transparent; color: var(--text); }
 .insert.empty { border-style: dashed; color: var(--text-faint); text-align: center; }
@@ -192,12 +202,12 @@ svg { display: block; }
 .fader-area { display: flex; justify-content: center; gap: 8px; min-height: 0; }
 .fader { position: relative; width: 28px; cursor: ns-resize; touch-action: none; }
 .fader .rail { position: absolute; left: 12px; top: 6px; bottom: 6px; width: 4px; border-radius: 2px; background: var(--bg); }
-.fader .cap { position: absolute; left: 0; width: 28px; height: 14px; margin-top: -7px; border-radius: 4px; background: var(--text-dim); box-shadow: 0 1px 0 #0006; }
+.fader .cap { position: absolute; left: 0; top: calc(6px + (100% - 12px) * var(--p, 0.11)); width: 28px; height: 14px; margin-top: -7px; border-radius: 4px; background: var(--text-dim); box-shadow: 0 1px 0 #0006; }
 .fader .cap::after { content: ""; position: absolute; left: 5px; right: 5px; top: 6px; height: 2px; background: var(--surface); }
 .fader:hover .cap { background: var(--text); }
 .meter { width: 14px; height: 100%; border-radius: 3px; }
 .strip .db { text-align: center; font: 500 11px/1 var(--mono); color: var(--text-dim); }
-.strip .ms { display: flex; justify-content: center; gap: 4px; }
+.strip .ms { display: flex; justify-content: center; gap: 4px; min-height: 24px; }
 
 /* piano roll and clip editor */
 .editor { display: grid; grid-template-rows: 40px minmax(0, 1fr); height: 100%; }
@@ -256,6 +266,9 @@ svg { display: block; }
 .settings nav button:hover { color: var(--text); background: var(--surface-3); }
 .settings nav button.on { color: var(--text); background: var(--surface-3); }
 .settings .pane { overflow: auto; padding: 4px 22px 22px; display: flex; flex-direction: column; gap: 14px; }
+/* Nothing in the page gives way when it is taller than the dialog: the page scrolls instead. */
+.settings .pane > * { flex-shrink: 0; }
+.settings .pane > .sub { color: var(--text-faint); font-size: var(--fs-s); margin-top: -6px; }
 .settings h3 { margin: 6px 0 2px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-faint); }
 .settings h3:not(:first-child) { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
 .list { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
@@ -306,7 +319,7 @@ svg { display: block; }
 :root[data-layout="compact"] { --row-h: 52px; --topbar-h: 46px; --header-w: 224px; --panel-h: 230px; --tabs-h: 34px; --fs: 12.5px; }
 :root[data-layout="compact"] .track .body { flex-direction: row; align-items: center; gap: 6px; }
 :root[data-layout="compact"] .track .row1 { flex: 1; min-width: 0; }
-:root[data-layout="compact"] .track .slot, :root[data-layout="compact"] .knob-num, :root[data-layout="compact"] .track .row2 > span[style] { display: none; }
+:root[data-layout="compact"] .hfader, :root[data-layout="compact"] .knob-num { display: none; }
 :root[data-layout="compact"] .track .row1 { min-width: 90px; }
 :root[data-layout="compact"] .knob-num { min-width: 54px; }
 :root[data-layout="compact"] .field { height: 34px; }

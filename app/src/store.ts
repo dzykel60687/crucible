@@ -1,6 +1,7 @@
 // UI state: the engine's state (the truth, replaced after every command) plus view-only choices
 // such as which track is selected. Views redraw when either changes.
 import { exec, type Reply, type State } from './engine'
+import { trail } from './trail'
 
 export type Tab = 'mixer' | 'piano' | 'clip' | 'console'
 
@@ -35,6 +36,29 @@ export function changed() {
   queued = true
   requestAnimationFrame(() => { queued = false; for (const f of listeners) f() })
 }
+
+// While a mouse button is held, the page must not be rebuilt: the element under the pointer
+// would be replaced, and the browser then drops the click (a button "does nothing") or the drag
+// loses its target. Listeners ask `pointerHeld()` and call `owe()` instead of rebuilding; the
+// rebuild happens as soon as the button is released. Found 2026-11-25: Stop did not respond
+// while the page was being redrawn many times a second.
+let held = false, owed = false
+export const pointerHeld = () => held
+export const owe = () => { owed = true }
+const released = () => {
+  held = false
+  if (owed) { owed = false; setTimeout(changed, 0) }
+}
+addEventListener('pointerdown', () => { held = true }, true)
+addEventListener('pointerup', released, true)
+addEventListener('pointercancel', released, true)
+addEventListener('blur', released)
+
+/** Fader travel: position 0..1 for a level in dB, and back. One curve for every volume control,
+ *  so the mixer fader and the slider in the track header agree. 0 dB sits at 0.89. */
+const FADER_EXP = 1.6
+export const dbToPos = (db: number) => (db <= -100 ? 0 : Math.pow(Math.min(1, Math.max(0, (db + 60) / 72)), 1 / FADER_EXP))
+export const posToDb = (p: number) => (p <= 0.01 ? -144 : Math.round((72 * Math.pow(p, FADER_EXP) - 60) * 10) / 10)
 
 /** Render now, without waiting for a frame. Dev and test use only: a hidden page gets no frames. */
 export function flush() {
@@ -126,6 +150,7 @@ export function created(replies: { data?: any }[]): number[] {
 
 // ------------------------------------------------------------------ toasts
 export function toast(kind: 'error' | 'info', title: string, text = '', code?: string) {
+  trail('saw', `${kind === 'error' ? 'error message' : 'message'}: ${code ? code + ' ' : ''}${title}${text ? ' | ' + text : ''}`)
   const host = document.getElementById('toasts')!
   const el = document.createElement('div')
   el.className = `toast ${kind}`

@@ -4,33 +4,93 @@ How the programs report problems, where the evidence ends up, and what every cod
 The goal: when something goes wrong on a machine no developer can see, one file sent back
 says what happened, where, on which build and on what system.
 
+## Sending a problem from another PC
+
+This is the whole procedure. It needs no command line and no developer at the machine.
+
+1. **When it happens, press F9** in the window and type what you noticed ("click on the snare",
+   "the playhead froze"). The log gets the time and the play position at once; the words are added
+   when you press Enter. In `crucible shell`, type `mark heard a click`.
+2. **Settings, Diagnostics, Create report file.** One text file appears on the Desktop:
+   `crucible-report-<date_time>.txt`. From a command line: `crucible report`.
+3. **Send that file** and say in a sentence or two what went wrong. If the report lists a crash
+   dump (`.dmp`), send that too.
+
+The report is enough to tell: which build ran (version, commit, fingerprint), on what machine and
+audio hardware, every command with its result and duration, what was clicked and what the window
+showed, how playback was coping at every moment, every dropout with its cause, every error with
+its code, and the project as it stood (tracks, clips, effects and settings, no audio).
+
+**Privacy:** a log names the computer, the user folder, the audio devices and the projects and
+files that were opened. It never holds audio, and never what was typed into a field. Nothing is
+sent anywhere by itself.
+
 ## Where things go
 
 | What | Where | Notes |
 |---|---|---|
-| Session log | `%LOCALAPPDATA%\Crucible\logs\<program>-<command>-<date_time>.txt` | One per run of anything that touches hardware. Written line by line, so it survives a crash. Newest 200 kept |
-| Crash dump | Same folder, same name, `.dmp` | Only when the program crashes. Newest 10 kept |
-| Problem report | The folder `crucible report` was run from, `crucible-report-<date_time>.txt` | Machine check plus the 8 newest logs in one file. **This is the file to send** |
+| Session log | `<program>.log` **beside the program**: `crucible-app.log` next to `crucible-app.exe`, `crucible.log` next to `crucible.exe` | One file, written line by line as things happen, started afresh on every run (Dzyan, 2026-11-25). The run before is kept once as `<program>.previous.log`, so the log of a crash survives the restart. Where the program folder cannot be written (an install under Program Files), both go to `%LOCALAPPDATA%\Crucible` instead. Settings, Diagnostics shows the path |
+| Crash dump | Beside the log, `<program>.dmp` (and `.previous.dmp`) | Only when the program crashes |
+| Problem report | From the window: the Desktop. From `crucible report`: the folder it was run from (`--out <folder>` to choose); the Desktop if that folder cannot be written | Machine check, audio output choice, and each program's log of this run and the run before, in one file. **This is the file to send** |
+| Audio output choice | `%LOCALAPPDATA%\Crucible\audio-output.json` | Per machine. Copied into the report |
 
-`crucible logs` prints the folder and lists recent logs with the first problem in each.
+`crucible logs` lists the log files with the first problem in each.
 
 ## What a log contains
 
-1. **Header:** program and version, build fingerprint (matches `crucible version`; tells test builds
-   apart), exe path and date, full command line, working folder, start time with time zone,
-   computer name and model, OS and kernel version, CPU and memory.
-2. **Timeline:** every line has clock time and seconds since start, then a level:
-   `INFO`, `WARN`, `ERROR`, `DEBUG`, `PANIC`.
+1. **Header:** program and version, **source** (the commit it was built from), build fingerprint
+   (matches `crucible version`; tells two builds apart), exe path and date, full command line,
+   working folder, start time with time zone, computer name and model, OS and kernel version, CPU
+   and memory. The window adds its Tauri and web view versions, then its size, display scale and
+   core count.
+2. **Timeline:** every line has clock time to the millisecond and seconds since start, then a
+   level or a tag:
+
+   | Line | Meaning |
+   |---|---|
+   | `INFO  > track.gain Piano -3` | A command, typed or sent by the window |
+   | `INFO  < ok in 0.4 ms: Piano gain -3.0 dB` | Its outcome: how long it took and what it answered (first 12 lines). `(slow)` from half a second |
+   | `INFO  < FAILED E5017 in 0.9 ms` | It failed. The `ERROR` line beside it has the detail |
+   | `UI    did: click button#t-play "Play / stop (Space)"` | What the person did: clicks, double-clicks, right-clicks, drags (start and distance), keys, dropped files, the window coming to the front or going to the back |
+   | `UI    did: click ... (0.15 s before this line)` | The log stamps a line when it is written; a window line written late says how long before |
+   | `UI    saw: error message: E2004 ...` | What the window showed: every message, resizes, hidden or visible |
+   | `UI    slow: the window froze for about 480 ms` | The window could not run for that long |
+   | `MARK  "click on the snare" \| playing, 12.34 s into the song ...` | The person's own note (F9, or `mark`). With `noticed 4.2 s before this line` when the words were typed after the moment |
+   | `AUDIO devices: Speakers, 48000 Hz 24-bit 2 ch [default]; ...` | Every audio device connected when Crucible started, with the rate Windows runs it at and who else is using it |
+   | `AUDIO device change: Connected: USB Interface (output)` | A device was plugged in, unplugged, made the default, or had its rate changed |
+   | `AUDIO other programs with sound on this output: chrome.exe` | Written before the output is opened |
+   | `AUDIO the driver asks for up to 4800 frames at a time, not the 480 it reported; ...` | The driver takes more per request than it said. The queue has grown to fit |
+   | `AUDIO start \| Speakers [exclusive, 24-bit, 48000 Hz, 144-frame buffer = 3.0 ms] ...` | Playback began: device, driver, format, buffer, queue, what is being played |
+   | `AUDIO at 20.0 s \| dropouts 0, late wake-ups 0, mixing 5.5% of one core, ...` | Health, every ten seconds while playing |
+   | `AUDIO the driver's thread woke late 1 time(s) near 0.02 s ...` | A near miss, on record when it happens (one at the start of playback is normal) |
+   | `AUDIO edit taken over near 13.20 s \| new mixer built in 2.1 ms` | An edit during playback reached the sound |
+   | `AUDIO stop (transport.stop) \| ...` | Playback ended, why, and the totals |
+   | `WARN  W2101 ... \| near 12.31 s of the song: the queue ran dry 1 time(s): mixing fell behind` | A dropout, logged when it happens (one line a second at most), with its cause: mixing fell behind, the driver reported an overrun, or the driver never asked for sound |
+   | `WARN  W1005 ... still running after 5 s: project.export ...` | A command is taking long (again at 30, 120 and 600 s). If the window hangs, the last such line names the command that never came back |
+   | `ERROR`, `PANIC`, `CRASH` | A coded failure, a bug in Crucible (with a stack), a native crash (below) |
+   | `---- snapshot (copied below) ----` | Written when a report is made: play state, output choice, the last 60 edits, and the project as JSON |
+
 3. **Library messages:** vst3-host, wasapi and midir log through Rust's `log` facade. Their
    warnings and errors land in the same file, tagged `[vst3_host::...]`. While a plugin loads,
    m0-play turns on `DEBUG`, so vst3-host's numbered loading steps are recorded. If a plugin
    crashes during loading, the last step in the log shows how far it got.
 4. **Ending:** `finished: OK (exit code 0)` or `finished: FAILED with E2004 (exit code 10)`.
-   **A log with no `finished:` line means the program crashed or was killed.**
+   **A log with no `finished:` line means the program crashed, was killed or lost power.**
 
-Real-time rule: the audio thread never writes to the log. Library messages raised on it are
-dropped and counted (`... records from the audio thread were dropped`). Timing problems are
-measured with counters on the audio thread and reported by the main thread once a second.
+Not recorded: text typed into fields, mouse movement, scrolling and zooming, and the position
+polls the window makes twenty times a second while playing (their numbers reach the log through
+the `AUDIO` lines instead).
+
+Real-time rule: the audio thread never writes to the log. It only counts (dropouts, late
+wake-ups); the lines above are written from the command thread when the window next asks for the
+play position, so a dropout is on record within about 50 ms of happening. Library messages raised
+on the audio thread are dropped and counted (`... records from the audio thread were dropped`).
+
+**The source line's one limit:** it names the commit that was checked out when the program was
+built, and adds "plus uncommitted changes" when it saw any. It is checked again only when the
+commit changes, so a test build made from uncommitted work can name the commit alone. The build
+fingerprint always tells two builds apart. Release builds are made right after their commit, so
+for them the commit is exact.
 
 ## Reading a crash
 
@@ -95,6 +155,15 @@ Limits:
 - HRESULT decoding is WASAPI-specific and lives in `crucible-audio-io/src/wasapi_exclusive.rs`. Each
   backend maps its own errors to the same E2xxx codes.
 - Some help texts name Windows settings. Add macOS and Linux wording when the ports start.
+- The window starts `crucible.exe report` as a hidden helper. Windows needs the CREATE_NO_WINDOW
+  flag for that (`platform_windows.rs`, `quiet_command`); macOS and Linux need nothing. Ledger row
+  "Hidden helper process".
+- The report folder is the Desktop from `dirs::desktop_dir()` on all three systems. On Windows a
+  Desktop redirected into OneDrive is still the Desktop: the report is then synced with it.
+  `report --out <folder>` writes elsewhere.
+- The source line needs `git` on the build machine, on every system.
+- "Beside the program" is `std::env::current_exe()`'s folder on every system. macOS application
+  bundles are read-only once signed, so the log will go to the per-user folder there.
 
 ## All codes
 
@@ -107,6 +176,8 @@ Generated by `crucible codes --markdown`. `E` = error, `W` = warning. First digi
 | `E1002` | A file could not be read | Check that the path exists and that no other program has the file locked. |
 | `E1003` | A file could not be written | Check free disk space, that the folder exists and that you may write there. OneDrive folders can lock files while syncing. |
 | `W1004` | The log file could not be created | The program still runs but records nothing. Check that the folder shown by `crucible logs` is writable. |
+| `W1005` | A command is taking a long time | Wait if it is an export or a large import. If the window stays stuck, close it and send a report: the log names the command that never finished. |
+| `E1006` | The report could not be made: crucible.exe was not found | The window uses the crucible.exe command-line tool to gather the report. It is installed in the tools folder beside the window program. Reinstall Crucible, or run `crucible.exe report` yourself. |
 | `E2001` | No audio output device was found | Connect or enable an output in the system sound settings, then run `crucible audio.devices`. |
 | `E2002` | No audio device matches the name given | Run `crucible audio.devices` and use part of a device name exactly as listed. |
 | `E2003` | The device name matches more than one device | Use more of the name, so that only one device matches. |
@@ -121,7 +192,7 @@ Generated by `crucible codes --markdown`. `E` = error, `W` = warning. First digi
 | `E2012` | Exclusive mode does not exist on this system | Only Windows has WASAPI exclusive mode. Other systems use their normal low-latency audio path. |
 | `E2013` | This machine's audio output choice could not be saved | The choice is kept beside the logs, in the per-user Crucible folder. Check that the folder can be written; the message names the file. |
 | `E2099` | The audio driver reported an error | The log line includes the driver's own code (HRESULT on Windows). Send the log. |
-| `W2101` | The audio driver missed a deadline: an audible dropout | Use a larger buffer (--block 256 or 512), close CPU-heavy programs, use the High performance power plan and keep a laptop on mains power. |
+| `W2101` | An audible dropout: the sound was interrupted | Use a larger buffer (`audio.output --buffer 256` or 512; `--block` in m0-play), close CPU-heavy programs, use the High performance power plan and keep a laptop on mains power. |
 | `W2102` | The audio thread woke up late: a risk of dropouts | Harmless if rare. If it is frequent, follow the advice for W2101. |
 | `E3001` | The MIDI system could not be opened | Restart the program. If it repeats, reconnect the keyboard and send the log. |
 | `E3002` | A MIDI input could not be opened | On Windows a MIDI input can be open in only one program at a time. Close other music programs (DAWs, standalone Omnisphere, browser MIDI pages, the keyboard's own editor). |
@@ -164,4 +235,5 @@ Generated by `crucible codes --markdown`. `E` = error, `W` = warning. First digi
 | `E5022` | That effect setting is not possible | The message says why: an unknown effect or setting, a value out of range, or an impulse-response file Crucible cannot use. `fx.kinds` lists every effect and setting. |
 | `E9001` | The program crashed | The log names the file the crash happened in. A plugin file there means the plugin crashed. Send the log and the .dmp file next to it. |
 | `E9002` | Internal error: a bug in Crucible | Send the log. It contains the source location of the bug. |
+| `E9003` | Internal error in the window: a bug in Crucible | The window may behave oddly from here on. Save under a new name, restart Crucible and send a report (Settings, Diagnostics, Create report file). |
 | `E9099` | Unexpected error | Send the log. |

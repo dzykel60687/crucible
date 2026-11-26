@@ -26,6 +26,9 @@ pub enum Kind {
     /// A track by name, position (`2`) or id (`#7`). Resolved to `#id` before the command runs.
     Track,
     Choice(&'static [&'static str]),
+    /// Free text: every further word on the line joins it, so quotes are optional
+    /// (`mark heard a click`). At most one per command.
+    Words,
 }
 
 pub struct Arg {
@@ -201,6 +204,10 @@ pub fn parse<C>(spec: &Spec<C>, tokens: &[String]) -> Result<Args, DawError> {
                 i += 1;
                 (arg, v.clone())
             }
+        } else if let Some(words) = spec.args.iter().find(|a| a.kind == Kind::Words && args.get(a.name).is_some()) {
+            let joined = format!("{} {tok}", args.text(words.name).unwrap_or_default());
+            args.set(words.name, Value::Text(joined));
+            continue;
         } else {
             let arg = spec.args.iter().find(|a| args.get(a.name).is_none()).ok_or_else(|| {
                 bad(format!("too many values for {}: '{tok}'. Usage: {}", spec.name, usage(spec)))
@@ -229,7 +236,7 @@ fn bool_word(s: &str) -> Option<bool> {
 fn convert(arg: &Arg, raw: &str) -> Result<Value, DawError> {
     let name = arg.name;
     match arg.kind {
-        Kind::Text | Kind::Track => Ok(Value::Text(raw.to_string())),
+        Kind::Text | Kind::Track | Kind::Words => Ok(Value::Text(raw.to_string())),
         Kind::Number => {
             let t = raw.trim();
             let t = t.strip_suffix("dB").or_else(|| t.strip_suffix("db")).unwrap_or(t);

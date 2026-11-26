@@ -34,6 +34,9 @@ When two of these conflict, the lower number wins. Details: `docs/01-vision-and-
    Dzyan is the tester. Every report separates **verified by machine** from **needs Dzyan's ears
    or hardware**. Never say audio works unless he confirmed it. Write his test steps into
    `docs/test-reports/` using the template there.
+   **The window is tested by machine before he sees it** (D-038): after any change to it, run
+   `pwsh -File tools\gui-test.ps1` and do not report the change as working until it passes. It
+   clicks the real program the way a hand does. Every GUI bug he or you find gets a check there.
 4. **Scope rule.** Build only what the current milestone in `docs/06-roadmap.md` names.
    A new feature idea goes into `docs/09-open-questions.md`, not into the code.
 5. **Decision rule.** Decisions live in `docs/08-decisions.md`. Entries marked *Decided* are
@@ -57,7 +60,13 @@ When two of these conflict, the lower number wins. Details: `docs/01-vision-and-
    user-visible failure carries a code from `crates/crucible-diagnostics/src/codes.rs` and keeps the raw
    evidence (OS error number, path, device or plugin name) in its message. Programs start a session
    log and end with `crucible_diagnostics::finish`. New code means `crucible codes --markdown` regenerates the
-   table in `docs/11-error-codes.md`. When Dzyan reports a problem, ask for `crucible report` output first.
+   table in `docs/11-error-codes.md`. When Dzyan reports a problem, ask for the report file first
+   (Settings, Diagnostics, Create report file; or `crucible report`). The log itself is one file
+   beside the program, `crucible-app.log`, started afresh each run.
+   The log is a full record of a session (D-037): commands and their outcomes are logged for
+   you; anything the window does that is not a command goes through `trail()` in
+   `app/src/trail.ts`; anything new that happens behind the scenes (a device opened, a
+   fallback taken, a thread falling behind) gets a line of its own. Never from an audio thread.
 11. **Lean rule** (D-024, details in `docs/01-vision-and-priorities.md`). Build it like id Software
    built Doom and Quake: plain data and plain functions, few dependencies, no layers that only
    pass calls along, measured budgets. Every user action is a command in a table (D-022); the GUI

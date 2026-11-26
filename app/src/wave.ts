@@ -1,7 +1,5 @@
-// Waveform levels for audio clips. Imported files use real peaks from the engine (`audio.peaks`,
-// fetched once per file and kept for the session); placeholder clips with no file keep the demo
-// stand-in, so the demo song still draws.
-import { PEAKS_PER_BEAT, peaksFor } from './demo'
+// Waveform levels for audio clips: real peaks from the engine (`audio.peaks`), fetched once per
+// file and kept for the session. A clip with no file behind it draws no waveform.
 import { exec, q, type Clip } from './engine'
 import { changed, state } from './store'
 
@@ -23,7 +21,7 @@ function decode(b64: string): Uint8Array {
 export function clipPeaks(c: Clip): Peaks | null {
   if (c.content.kind !== 'audio') return null
   const content = c.content
-  if (!content.frames) return { data: peaksFor(content.source, content.source_length), perBeat: PEAKS_PER_BEAT, scale: 1 }
+  if (!content.frames) return { data: [], perBeat: 1, scale: 1 }
   if (state.folder !== cacheFolder) { cache.clear(); cacheFolder = state.folder }
   const hit = cache.get(content.source)
   const p = state.project

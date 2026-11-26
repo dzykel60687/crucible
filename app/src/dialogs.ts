@@ -1,9 +1,9 @@
 // Menus and dialogs: project menu, track menu, settings (one page), export, plugin picker,
 // open/save. One level deep, never nested (05-gui-design-brief.md).
-import { demo, devices, plugins } from './demo'
-import { PPQ, q, type Track } from './engine'
+import { audioHtml, onDevices, refreshDevices, wireAudio } from './devices'
+import { exec, PPQ, q } from './engine'
 import { icon } from './icons'
-import { changed, esc, run, selectClips, state, toast, ui } from './store'
+import { esc, run, selectClips, state, toast, ui } from './store'
 import { refreshPalette } from './timeline'
 import { applyLayout, currentLayout, LAYOUTS } from './layout'
 
@@ -48,7 +48,6 @@ export function dialog(title: string, html: string, opts: { wide?: boolean; foot
   return d
 }
 
-const DEMO = '<span class="tag demo">demo</span>'
 
 // ------------------------------------------------------------------ open / save
 export function pathPrompt(mode: 'open' | 'save' | 'new') {
@@ -85,33 +84,32 @@ export function textPrompt(title: string, value: string, done: (v: string) => vo
   input.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') go(); if (e.key === 'Escape') closeLayer() }
 }
 
-// ------------------------------------------------------------------ plugin picker
-export function openPluginPicker(t: Track, kind: 'Instrument' | 'Effect') {
-  const list = plugins.filter((p) => p.kind === kind)
-  const d = dialog(kind === 'Instrument' ? `Instrument for ${t.name}` : `Add effect to ${t.name}`, `<div class="content">
-      <label style="position:relative"><input class="input" placeholder="Search plugins" style="padding-left:34px"><span style="position:absolute;left:10px;top:8px;width:18px;color:var(--text-faint)">${icon.search}</span></label>
-      <div class="plugin-list">${list.map((p, i) => `<button data-i="${i}"><span class="pi">${icon.plug}</span><span><b>${esc(p.name)}</b><small>${esc(p.vendor)} · ${esc(p.note)}</small></span></button>`).join('')}</div>
-    </div>`, { tag: DEMO, footer: `<span class="note">Real list comes from the plugin scan (crucible plugin.scan). Each plugin loads in its own process.</span><button class="btn" data-close>Cancel</button>` })
+/** F9. The moment is logged at once, before any typing; words typed afterwards go in as a second
+ *  line that says how long ago the moment was. Closing without typing keeps the first line. */
+export function markPrompt() {
+  const pressed = performance.now()
+  run('mark', { quiet: true })
+  const d = dialog('Marked in the log', `<div class="content"><input class="input" placeholder="What did you notice? Enter adds it to the mark" spellcheck="false">
+    <div class="sub" style="margin-top:8px">The time and the play position are already recorded. Send the log with Settings, Diagnostics, Create report file.</div></div>`,
+    { footer: '<button class="btn" data-close>Close</button><button class="btn primary" data-go>Add note</button>' })
   const input = d.querySelector('input')!
   input.focus()
-  input.oninput = () => d.querySelectorAll<HTMLButtonElement>('.plugin-list button').forEach((b) => (b.style.display = b.textContent!.toLowerCase().includes(input.value.toLowerCase()) ? '' : 'none'))
-  input.onkeydown = (e) => e.stopPropagation()
-  d.querySelectorAll<HTMLButtonElement>('.plugin-list button').forEach((b) => (b.onclick = () => {
-    const p = list[+b.dataset.i!]
-    if (kind === 'Instrument') demo.instrument.set(t.id, p.name)
-    else demo.inserts.set(t.id, [...(demo.inserts.get(t.id) ?? []), p.name])
-    closeLayer(); changed()
-  }))
+  const go = () => {
+    const v = input.value.trim()
+    closeLayer()
+    if (v) run(`mark ${q(v)} --ago ${((performance.now() - pressed) / 1000).toFixed(1)}`, { quiet: true })
+  }
+  d.querySelector<HTMLButtonElement>('[data-go]')!.onclick = go
+  input.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') go(); if (e.key === 'Escape') closeLayer() }
 }
 
 // ------------------------------------------------------------------ export
 export function openExport() {
   const p = state.project
-  // Ranges in beats. Loop comes from the transport stand-in; selection is the selected clips' span.
+  // Ranges in beats. Selection is the selected clips' span.
   const sel = state.project.clips.filter((c) => ui.selClips.has(c.id))
   const ranges: Record<string, [number, number] | null> = {
     song: null,
-    loop: demo.loop ? [demo.loopStart, demo.loopEnd] : null,
     selection: sel.length ? [Math.min(...sel.map((c) => c.start)) / PPQ, Math.max(...sel.map((c) => c.start + c.length)) / PPQ] : null,
   }
   const sep = state.folder?.includes('/') ? '/' : '\\'
@@ -119,7 +117,7 @@ export function openExport() {
   const d = dialog('Export', `<div class="content">
       <div class="row"><span>Format</span><span style="color:var(--text-dim)">WAV, stereo, ${p.sample_rate} Hz (the project rate, no resampling)</span></div>
       <div class="row"><span>Bit depth</span><div class="seg" data-g="bits"><button data-v="16">16-bit</button><button data-v="24" class="on">24-bit</button><button data-v="32f">32-bit float</button></div></div>
-      <div class="row"><span>Range</span><div class="seg" data-g="range"><button data-v="song" class="on">Whole song</button><button data-v="loop" ${ranges.loop ? '' : 'disabled title="Loop is off"'}>Loop</button><button data-v="selection" ${ranges.selection ? '' : 'disabled title="No clips selected"'}>Selection</button></div></div>
+      <div class="row"><span>Range</span><div class="seg" data-g="range"><button data-v="song" class="on">Whole song</button><button data-v="selection" ${ranges.selection ? '' : 'disabled title="No clips selected"'}>Selection</button></div></div>
       <div class="row"><span>Dither</span><label style="color:var(--text-dim)" data-dither>Off: 24-bit needs none</label></div>
       <div class="row"><span>File</span><input class="input" value="${esc(file)}" placeholder="full path, e.g. C:\\Music\\Song.wav" spellcheck="false"></div>
       <div class="row"><span></span><span style="color:var(--text-faint);font-size:var(--fs-s)">Audio clips only: MIDI is silent until instruments are hosted. Nothing is normalised or limited.</span></div>
@@ -150,60 +148,47 @@ export function openExport() {
 }
 
 // ------------------------------------------------------------------ settings: one page
-const SECTIONS = ['Audio', 'MIDI', 'Plugins', 'Project', 'Appearance', 'Keyboard', 'Diagnostics']
-/** Sections whose controls really work. The others show planned settings with demo values. */
-const LIVE = new Set(['Project', 'Appearance', 'Keyboard'])
+const SECTIONS = ['Audio', 'Project', 'Appearance', 'Keyboard', 'Diagnostics']
 const ACCENTS = ['#45c08f', '#5aa2ff', '#2dd4bf', '#a78bfa', '#e6b450', '#f47c96']
-const prefs = { driver: 0, output: 0, input: 0, buffer: 2, exclusive: true, accent: '#45c08f', reduceMotion: false }
+const prefs = { accent: '#45c08f', reduceMotion: false }
 
 export const SHORTCUTS: [string, string][] = [
-  ['Play / stop', 'Space'], ['Record', 'R'], ['Return to start', 'Home'], ['Loop on/off', 'L'], ['Metronome', 'K'],
+  ['Play / stop', 'Space'], ['Return to start', 'Home'],
   ['Undo', 'Ctrl+Z'], ['Redo', 'Ctrl+Shift+Z'], ['Save', 'Ctrl+S'], ['Export', 'Ctrl+Shift+E'], ['Settings', 'Ctrl+,'],
   ['Copy / cut / paste clips', 'Ctrl+C / X / V'], ['Duplicate clips', 'Ctrl+D'], ['Split at playhead', 'Ctrl+E'],
   ['Delete clips (or note)', 'Del'], ['Select all clips', 'Ctrl+A'], ['Nudge clips by grid / bar', '← → / Shift'],
   ['Move clips: drag · copy: Ctrl+drag', 'mouse'], ['Trim: drag a clip edge · no snap: Alt', 'mouse'],
   ['Import audio (or drop files on the window)', 'Ctrl+I'], ['Add track', 'Ctrl+T'], ['Rename track', 'F2'], ['Mute / solo track', 'M / S'], ['Remove track', 'Ctrl+Del'],
   ['Select track above / below', '↑ / ↓'], ['Zoom in / out', '+ / − or Ctrl+wheel'], ['Mixer / piano roll / clip / console', '1 / 2 / 3 / `'],
-  ['Show / hide panel', 'B'], ['Next layout', 'Ctrl+Shift+L'],
+  ['Show / hide panel', 'B'], ['Next layout', 'Ctrl+Shift+L'], ['Mark this moment in the log', 'F9'],
 ]
 
 export function openSettings(section = 'Audio') {
   const d = dialog('Settings', `<div class="settings"><nav>${SECTIONS.map((s) => `<button data-s="${s}">${s}</button>`).join('')}</nav><div class="pane"></div></div>`, { wide: true })
   const pane = d.querySelector<HTMLElement>('.pane')!
+  let shown = section
   const show = (s: string) => {
+    shown = s
     d.querySelectorAll<HTMLButtonElement>('nav button').forEach((b) => b.classList.toggle('on', b.dataset.s === s))
-    pane.innerHTML = (LIVE.has(s) ? '' : '<div><span class="tag demo">demo values: not wired to devices yet</span></div>') + sectionHtml(s)
+    refresh(s, pane)
     pane.scrollTop = 0
-    wire(s, pane)
   }
   d.querySelectorAll<HTMLButtonElement>('nav button').forEach((b) => (b.onclick = () => show(b.dataset.s!)))
   show(section)
+  // The device list is asked for in full now, and the Audio page follows it for as long as the
+  // dialog is open: plug something in and it appears.
+  void refreshDevices(true)
+  onDevices(() => {
+    if (!d.isConnected) return false
+    if (shown === 'Audio' && !pane.matches(':focus-within')) { const y = pane.scrollTop; refresh('Audio', pane); pane.scrollTop = y }
+    return true
+  })
 }
-
-const sel = (opts: string[], i: number, attr: string) => `<select class="input" ${attr}>${opts.map((o, k) => `<option value="${k}" ${k === i ? 'selected' : ''} ${o.includes('not in this build') ? 'disabled' : ''}>${esc(o)}</option>`).join('')}</select>`
 
 function sectionHtml(s: string): string {
   const p = state.project
-  const lat = (devices.buffers[prefs.buffer] / p.sample_rate * 1000).toFixed(1)
   switch (s) {
-    case 'Audio': return `<h3>Audio device</h3>
-      <label class="row"><span>Driver</span>${sel(devices.drivers, prefs.driver, 'data-p="driver"')}</label>
-      <label class="row"><span>Output</span>${sel(devices.outputs, prefs.output, 'data-p="output"')}</label>
-      <label class="row"><span>Input</span>${sel(devices.inputs, prefs.input, 'data-p="input"')}</label>
-      <div class="row"><span>Buffer</span><div class="seg" data-buf>${devices.buffers.map((b, i) => `<button class="${i === prefs.buffer ? 'on' : ''}" data-i="${i}">${b}</button>`).join('')}</div></div>
-      <div class="row"><span></span><div class="sub">${devices.buffers[prefs.buffer]} samples at ${p.sample_rate / 1000} kHz = ${lat} ms each way</div></div>
-      <div class="row"><span>Exclusive mode</span><span><button class="switch ${prefs.exclusive ? 'on' : ''}" data-x="exclusive"></button></span></div>
-      <div class="row"><span></span><div class="sub">Takes the device over for the lowest latency. Other programs go silent meanwhile.</div></div>
-      <h3>Safety</h3>
-      <div class="row"><span>Device rate</span><span style="color:var(--ok)">Matches the project (${p.sample_rate} Hz). Nothing is resampled.</span></div>
-      <div class="row"><span>Test</span><span><button class="btn solid" data-act="audio.test">Run timing test</button></span></div>`
-    case 'MIDI': return `<h3>MIDI inputs</h3><div class="list">${devices.midi.map((m, i) => `<div><span class="grow">${esc(m.name)}<br><small>Notes go to the selected instrument track</small></span><button class="switch ${m.on ? 'on' : ''}" data-midi="${i}"></button></div>`).join('')}</div>
-      <div class="row"><span>Record from</span>${sel(['All enabled inputs', ...devices.midi.map((m) => m.name)], 0, '')}</div>`
-    case 'Plugins': return `<h3>VST3 folders</h3><div class="list">
-        <div><span class="grow">C:\\Program Files\\Common Files\\VST3<br><small>Standard location · always scanned</small></span></div>
-        <div><span class="grow">D:\\Plugins\\VST3<br><small>Added by you</small></span><button class="btn">Remove</button></div></div>
-      <div><button class="btn solid">${icon.plus} Add folder</button> <button class="btn solid" data-act="plugin.scan">Rescan</button></div>
-      <h3>Found</h3><div class="list">${plugins.map((pl) => `<div><span class="grow">${esc(pl.name)}<br><small>${esc(pl.vendor)} · ${pl.kind}</small></span><span class="tag live">OK</span></div>`).join('')}</div>`
+    case 'Audio': return audioHtml()
     case 'Project': return `<h3>This project</h3>
       <label class="row"><span>Name</span><input class="input" data-cmd="project.rename" value="${esc(p.name)}"></label>
       <label class="row"><span>Sample rate</span><select class="input" data-cmd="project.rate">${[44100, 48000, 88200, 96000, 176400, 192000].map((r) => `<option ${r === p.sample_rate ? 'selected' : ''}>${r}</option>`).join('')}</select></label>
@@ -222,24 +207,26 @@ function sectionHtml(s: string): string {
       <div class="row"><span></span><div class="sub">Turns off the few 120 ms transitions. Nothing in Crucible animates while idle either way.</div></div>`
     case 'Keyboard': return `<h3>Shortcuts</h3><div class="keys">${SHORTCUTS.map(([a, k]) => `<span>${esc(a)}</span><kbd>${esc(k)}</kbd>`).join('')}</div>`
     case 'Diagnostics': return `<h3>When something goes wrong</h3>
-      <div class="row"><span>Logs</span><span style="color:var(--text-dim);user-select:text;font-family:var(--mono);font-size:12px">%LOCALAPPDATA%\\Crucible\\logs</span></div>
-      <div class="row"><span>Report</span><span><button class="btn solid" data-act="report">Create report file</button></span></div>
-      <div class="row"><span></span><div class="sub">Bundles the machine check and recent logs into one file to send. For now run <code>crucible report</code>.</div></div>
+      <div class="row"><span>1. Mark it</span><span>Press <kbd>F9</kbd> the moment it happens, then type what you noticed. The log gets the time and the play position.</span></div>
+      <div class="row"><span>2. Report</span><span><button class="btn solid" data-act="report">Create report file</button></span></div>
+      <div class="row"><span></span><div class="sub" data-report>One text file on the Desktop: this machine's audio check and the recent logs, with everything done in this window. Send that file. It holds no audio.</div></div>
+      <h3>The log</h3>
+      <div class="row"><span>File</span><span data-logpath style="color:var(--text-dim);user-select:text;font-family:var(--mono);font-size:12px;overflow-wrap:anywhere">…</span></div>
+      <div class="row"><span></span><div class="sub">One file beside the program, written as things happen and started afresh every time Crucible starts. The run before is kept once, as <code>.previous.log</code>, so a crash can still be read after a restart. It holds every command and its result, clicks and keys in this window (never what you type into a field), playback health and every dropout, errors and crashes. Nothing is sent anywhere by itself.</div></div>
       <div class="row"><span>Error codes</span><span style="color:var(--text-dim)">Every failure shows a code like E2004 with what to try.</span></div>`
   }
   return ''
 }
 
 function wire(s: string, pane: HTMLElement) {
-  pane.querySelectorAll<HTMLSelectElement>('select[data-p]').forEach((el) => (el.onchange = () => { (prefs as any)[el.dataset.p!] = +el.value }))
-  pane.querySelectorAll<HTMLButtonElement>('[data-buf] button').forEach((b) => (b.onclick = () => { prefs.buffer = +b.dataset.i!; refresh(s, pane) }))
+  if (s === 'Audio') return wireAudio(pane, () => refresh(s, pane))
+  const where = pane.querySelector<HTMLElement>('[data-logpath]')
+  if (where) exec('log.path').then((r) => { where.textContent = r.replies[0]?.text ?? 'unknown' }).catch(() => { where.textContent = 'unknown' })
   pane.querySelectorAll<HTMLButtonElement>('[data-x]').forEach((b) => (b.onclick = () => {
-    const k = b.dataset.x as 'exclusive' | 'reduceMotion'
-    prefs[k] = !prefs[k]
-    b.classList.toggle('on', prefs[k])
-    if (k === 'reduceMotion') document.documentElement.style.setProperty('--t', prefs.reduceMotion ? '0ms' : '120ms')
+    prefs.reduceMotion = !prefs.reduceMotion
+    b.classList.toggle('on', prefs.reduceMotion)
+    document.documentElement.style.setProperty('--t', prefs.reduceMotion ? '0ms' : '120ms')
   }))
-  pane.querySelectorAll<HTMLButtonElement>('[data-midi]').forEach((b) => (b.onclick = () => { const m = devices.midi[+b.dataset.midi!]; m.on = !m.on; b.classList.toggle('on', m.on) }))
   pane.querySelectorAll<HTMLButtonElement>('[data-layout]').forEach((b) => (b.onclick = () => { applyLayout(b.dataset.layout!); refresh(s, pane) }))
   pane.querySelectorAll<HTMLButtonElement>('[data-accent]').forEach((b) => (b.onclick = () => {
     prefs.accent = b.dataset.accent!
@@ -248,7 +235,15 @@ function wire(s: string, pane: HTMLElement) {
     document.documentElement.style.setProperty('--accent-hover', prefs.accent)
     refreshPalette(); refresh(s, pane)
   }))
-  pane.querySelectorAll<HTMLButtonElement>('[data-act]').forEach((b) => (b.onclick = () => toast('info', `Run crucible ${b.dataset.act}`, 'Machine commands are in crucible.exe today. They join the window when the device layer moves into the engine.')))
+  pane.querySelectorAll<HTMLButtonElement>('[data-act]').forEach((b) => (b.onclick = async () => {
+    const note = pane.querySelector<HTMLElement>('[data-report]')!
+    b.disabled = true
+    note.textContent = 'Gathering the machine check and the logs. This takes about 15 seconds.'
+    const reply = (await run('report --no-plugins', { quiet: true })).at(-1)
+    b.disabled = false
+    note.style.userSelect = 'text'
+    note.textContent = reply?.ok ? `Written to ${reply.data?.report ?? 'the folder shown in the Console tab'}. Send that one file.` : 'The report could not be made. The Console tab says why.'
+  }))
   pane.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-cmd]').forEach((el) => {
     const send = async () => {
       const v = el.value.trim()
@@ -261,4 +256,4 @@ function wire(s: string, pane: HTMLElement) {
   })
 }
 
-function refresh(s: string, pane: HTMLElement) { pane.innerHTML = (LIVE.has(s) ? '' : '<div><span class="tag demo">demo values: not wired to devices yet</span></div>') + sectionHtml(s); wire(s, pane) }
+function refresh(s: string, pane: HTMLElement) { pane.innerHTML = sectionHtml(s); wire(s, pane) }

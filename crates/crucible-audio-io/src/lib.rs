@@ -13,6 +13,7 @@
 //   Linux:   ALSA, and PulseAudio / PipeWire / JACK behind cpal features
 // Windows-specific modules of this crate:
 //   - wasapi_exclusive.rs: WASAPI exclusive mode (cpal 0.18.2 only does shared mode, T2).
+//   - wasapi_endpoints.rs: the device list with rates and users, and plug detection.
 // ASIO streams and shared-mode streams go through cpal (output.rs). The "asio" feature needs
 // the ASIO SDK and LLVM at build time, see .cargo/config.toml (D-035).
 //
@@ -24,6 +25,8 @@ use serde::Serialize;
 
 pub mod convert;
 mod output;
+#[cfg(windows)]
+mod wasapi_endpoints;
 #[cfg(windows)]
 mod wasapi_exclusive;
 
@@ -203,6 +206,81 @@ pub fn open_exclusive_output(
     {
         let _ = (device, sample_rate, period_frames, src_channels, callback);
         Err(not_applicable())
+    }
+}
+
+/// One audio device as the operating system lists it: an output (speakers, an interface) or an
+/// input (a microphone, a line in).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Endpoint {
+    pub name: String,
+    pub input: bool,
+    /// The system's default device for its direction.
+    pub default: bool,
+    /// What the system runs the device at when programs share it: sample rate, channels and
+    /// bits. On Windows this is the setting under Sound, Advanced. `None` if it would not say.
+    pub rate: Option<u32>,
+    pub channels: Option<u16>,
+    pub bits: Option<u16>,
+    /// Other programs with sound running on this device right now (Windows only; a program
+    /// using an ASIO driver is invisible here).
+    pub used_by: Vec<String>,
+}
+
+/// Every active audio device: quick, opens nothing, safe to call while audio runs.
+pub fn endpoints() -> Result<Vec<Endpoint>, DawError> {
+    #[cfg(windows)]
+    {
+        wasapi_endpoints::list()
+    }
+    #[cfg(not(windows))]
+    {
+        // PLATFORM: names and defaults through cpal until the ports add rates and listeners.
+        let host = cpal::default_host();
+        let (out, inp) = (host.default_output_device().and_then(|d| d.id().ok()), host.default_input_device().and_then(|d| d.id().ok()));
+        let devices = host.devices().map_err(|e| DawError::new(crucible_diagnostics::Code::AudioDriverError, e.to_string()))?;
+        let mut list = Vec::new();
+        for d in devices {
+            let name = d.description().map(|x| x.name().to_string()).unwrap_or_else(|_| "<unnamed device>".to_string());
+            let id = d.id().ok();
+            for (input, default) in [(false, &out), (true, &inp)] {
+                let has = if input { d.default_input_config().is_ok() } else { d.default_output_config().is_ok() };
+                if has {
+                    list.push(Endpoint { name: name.clone(), input, default: id.is_some() && id == *default, rate: None, channels: None, bits: None, used_by: Vec::new() });
+                }
+            }
+        }
+        Ok(list)
+    }
+}
+
+/// Notices when devices are plugged in, unplugged, enabled, disabled, made the default, or have
+/// a setting such as their sample rate changed. Ask `changes()` now and then: when the number
+/// has moved, list the devices again.
+pub struct DeviceWatch {
+    #[cfg(windows)]
+    inner: wasapi_endpoints::Watch,
+}
+
+impl DeviceWatch {
+    pub fn start() -> DeviceWatch {
+        DeviceWatch {
+            #[cfg(windows)]
+            inner: wasapi_endpoints::Watch::start(),
+        }
+    }
+
+    /// How many changes the system has reported since `start`. Always 0 where there is no
+    /// listener yet (macOS, Linux): list again on a timer there.
+    pub fn changes(&self) -> u64 {
+        #[cfg(windows)]
+        {
+            self.inner.changes()
+        }
+        #[cfg(not(windows))]
+        {
+            0
+        }
     }
 }
 

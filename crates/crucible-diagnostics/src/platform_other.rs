@@ -9,6 +9,12 @@ use std::path::PathBuf;
 
 pub fn install_crash_handler(_log: Option<File>, _dump: Option<PathBuf>) {}
 
+/// A command for a helper program that must not show a window of its own. Nothing special is
+/// needed here: only Windows opens a console window for a console program started by a GUI one.
+pub fn quiet_command(exe: &std::path::Path) -> std::process::Command {
+    std::process::Command::new(exe)
+}
+
 pub fn exception_name(_code: u32) -> Option<&'static str> {
     None
 }

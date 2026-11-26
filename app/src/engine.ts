@@ -35,8 +35,15 @@ let held: State | null = null
  *  the window runs commands on a thread pool and the browser may send fetches in parallel. */
 let queue: Promise<unknown> = Promise.resolve()
 
+/** Set by trail.ts: hands over the window events waiting to be logged, as command text. */
+export const trailHook = { take: () => '' }
+
 /** Run command text. The engine replies with what changed since the revision this page holds. */
 export function exec(line: string): Promise<Result> {
+  // What the person did goes into the log before the command it caused, in its own call, so a
+  // click reads before its effect and can never get in the way of the command.
+  const did = trailHook.take()
+  if (did) queue = queue.then(() => execNow(did)).catch(() => {})
   const next = queue.then(() => execNow(line))
   queue = next.catch(() => {})
   return next

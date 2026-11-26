@@ -38,6 +38,11 @@ Paste the log file the program wrote, or give its path.
 
 Filled in by the coding session, so it is clear what was already proven without hardware.
 
+## When a step fails
+
+Press F9 in the window at the moment it goes wrong and type what you noticed. Afterwards:
+Settings, Diagnostics, Create report file, and send the file it names (`docs/11-error-codes.md`).
+
 ## Platform notes
 
 Record the operating system in the setup table. Keep the same step wording across systems so

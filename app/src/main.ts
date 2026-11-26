@@ -1,15 +1,19 @@
 // Crucible's window: top bar, track headers, timeline, bottom panel. Views draw from `state`
 // (the engine's truth) and change it only through `run(command)`.
-import { closeLayer, layerOpen, menu, openExport, openPluginPicker, openSettings, pathPrompt, textPrompt, type Item } from './dialogs'
-import { demo, seedPlugins, settling } from './demo'
+import { closeLayer, layerOpen, markPrompt, menu, openExport, openSettings, pathPrompt, textPrompt, type Item } from './dialogs'
+import { chosenOutput, watchDevices } from './devices'
 import { beats, ids, inTauri, PPQ, q, transportName, type Clip } from './engine'
 import { icon } from './icons'
 import { loadKinds } from './effects'
 import { cycleLayout, loadLayout } from './layout'
 import { deleteSelectedNote, drawMeters, renderPanel, renderTabs, selectTab, setCommandNames } from './panels'
-import { bpb, changed, clip, created, dragNumber, esc, flush, fmtDb, fmtPan, onChange, redraw, run, selectClips, state, toast, toggleMute, toggleSolo, track, ui, view } from './store'
-import { advance, device, togglePlay as transportToggle } from './transport'
+import { bpb, changed, clip, created, dbToPos, dragNumber, esc, flush, fmtDb, fmtPan, onChange, owe, pointerHeld, posToDb, redraw, run, selectClips, state, toast, toggleMute, toggleSolo, track, ui, view } from './store'
+import { advance, device, settling, togglePlay as transportToggle, tp } from './transport'
 import { clampScroll, draw, dropTarget, follow, hooks, pasteTarget, rowH, trackColor, zoom } from './timeline'
+import { startTrail } from './trail'
+
+// First, so that anything that goes wrong while the window builds itself is on record.
+startTrail()
 
 loadLayout()
 
@@ -24,9 +28,6 @@ top.innerHTML = `
   <div class="group transport">
     <button class="btn" id="t-start" title="Return to start (Home)">${icon.start}</button>
     <button class="btn play" id="t-play" title="Play / stop (Space)">${icon.play}</button>
-    <button class="btn rec" id="t-rec" title="Record (R)">${icon.rec}</button>
-    <button class="btn" id="t-loop" title="Loop (L)">${icon.loop}</button>
-    <button class="btn" id="t-metro" title="Metronome (K)">${icon.metro}</button>
   </div>
   <span class="sep"></span>
   <div class="field edit" id="f-tempo" title="Tempo: drag, or click to type"><span class="k">Tempo</span><span class="v"></span></div>
@@ -35,19 +36,19 @@ top.innerHTML = `
   <span class="spacer"></span>
   <div class="safety">
     <div class="field headroom" title="Highest peak since play started. Click to reset."><span class="k">Peak</span><span class="v" style="display:flex;align-items:center;gap:8px"><span id="peak"></span><span class="clip-light" id="clip"></span></span></div>
-    <div class="field" title="Short-term loudness"><span class="k">LUFS</span><span class="v" id="lufs"></span></div>
-    <button class="btn" id="b-mono" title="Mono check">${icon.mono}<span style="font-size:11.5px">Mono</span></button>
-    <button class="btn" id="b-ab" title="Reference track A/B">${icon.ab}</button>
   </div>
   <span class="sep"></span>
-  <div class="device" id="device" title="Audio device. Click for settings."><span class="dot"></span><span id="dev-text"></span><span class="xruns" id="xruns"></span></div>
+  <div class="device" id="device"><span class="dot"></span><span id="dev-text"></span><span class="xruns" id="xruns"></span></div>
   <button class="btn icon" id="gear" title="Settings (Ctrl+,)">${icon.gear}</button>`
 
 const el = {
-  projName: $('#proj .name'), proj: $('#proj'), play: $('#t-play'), rec: $('#t-rec'), loop: $('#t-loop'), metro: $('#t-metro'),
-  tempo: $('#f-tempo .v'), sig: $('#f-sig .v'), pos: $('.position .v'), peak: $('#peak'), clip: $('#clip'), lufs: $('#lufs'),
-  mono: $('#b-mono'), ab: $('#b-ab'), dev: $('#dev-text'), xruns: $('#xruns'),
+  projName: $('#proj .name'), proj: $('#proj'), play: $('#t-play'),
+  tempo: $('#f-tempo .v'), sig: $('#f-sig .v'), pos: $('.position .v'), peak: $('#peak'), clip: $('#clip'),
+  devBox: $('#device'), dev: $('#dev-text'), xruns: $('#xruns'),
 }
+/** Which icon the play button shows. Its contents are replaced only when this changes: replacing
+ *  them on every update put a new element under the pointer mid-click, and the click was lost. */
+let playIcon: boolean | null = null
 
 function updateTop() {
   const p = state.project
@@ -56,29 +57,30 @@ function updateTop() {
   el.proj.title = state.dirty ? 'Unsaved changes' : state.folder ?? 'Not saved yet'
   el.tempo.textContent = p.tempo_bpm.toFixed(p.tempo_bpm % 1 ? 2 : 0)
   el.sig.textContent = `${p.time_signature[0]}/${p.time_signature[1]}`
-  el.play.innerHTML = demo.playing ? icon.stop : icon.play
-  el.play.classList.toggle('on', demo.playing)
-  el.rec.classList.toggle('on', demo.recording)
-  el.loop.classList.toggle('on', demo.loop)
-  el.metro.classList.toggle('on', demo.metronome)
-  el.mono.classList.toggle('on', demo.mono)
-  el.ab.classList.toggle('on', demo.ab)
-  el.dev.textContent = device ? `${p.sample_rate / 1000} kHz · ${device.driver} · ${device.buffer_frames} · ${device.buffer_ms.toFixed(1)} ms` : `${p.sample_rate / 1000} kHz`
-  el.dev.title = device ? device.device : 'The audio device opens when you press play. Choose it with the audio.output command.'
-  el.xruns.textContent = demo.xruns ? `${demo.xruns} dropouts` : ''
+  if (playIcon !== tp.playing) { playIcon = tp.playing; el.play.innerHTML = tp.playing ? icon.stop : icon.play }
+  el.play.classList.toggle('on', tp.playing)
+  // While playing: what the driver really gave. Otherwise: the output that will be used and the
+  // rate Windows runs it at.
+  const out = chosenOutput()
+  el.dev.textContent = device
+    ? `${device.sample_rate / 1000} kHz · ${device.driver} · ${device.buffer_frames} · ${device.buffer_ms.toFixed(1)} ms`
+    : out ? `${out.name}${out.rate ? ` · ${out.rate / 1000} kHz` : ''}` : 'No audio output'
+  el.devBox.title = (device ? `Playing through ${device.device}, ${device.format}. ` : out ? `${out.name}. Opens when you press play. ` : 'No audio output is connected. ') + 'Click for audio settings.'
+  el.devBox.classList.toggle('none', !device && !out)
   updateReadouts()
 }
 
 /** The parts of the top bar that move while playing. */
 function updateReadouts() {
-  const per = bpb(), b = demo.pos
+  const per = bpb(), b = tp.pos
   const bar = Math.floor(b / per) + 1, beat = Math.floor(b % per) + 1, six = Math.floor((b % 1) * 4) + 1
   const secs = b * 60 / state.project.tempo_bpm
   const mm = Math.floor(secs / 60), ss = (secs % 60).toFixed(3).padStart(6, '0')
   el.pos.innerHTML = `${bar}.${beat}.${six}<small>${mm}:${ss}</small>`
-  el.peak.textContent = Number.isFinite(demo.peakDb) ? `${demo.peakDb.toFixed(1)}` : '—'
-  el.clip.classList.toggle('hot', demo.clipped)
-  el.lufs.textContent = Number.isFinite(demo.lufs) ? demo.lufs.toFixed(1) : '—'
+  el.peak.textContent = Number.isFinite(tp.peakDb) ? `${tp.peakDb.toFixed(1)}` : '—'
+  el.clip.classList.toggle('hot', tp.clipped)
+  const drops = tp.dropouts ? `${tp.dropouts} dropout${tp.dropouts === 1 ? '' : 's'}` : ''
+  if (el.xruns.textContent !== drops) el.xruns.textContent = drops
 }
 
 // top bar actions
@@ -106,14 +108,9 @@ function projectMenu(at: { x: number; y: number }) {
 }
 function save() { if (state.folder) run('project.save'); else pathPrompt('save') }
 
-$('#t-start').onclick = () => { demo.pos = demo.loop ? demo.loopStart : 0; changed() }
+$('#t-start').onclick = () => { tp.pos = 0; changed() }
 el.play.onclick = togglePlay
-el.rec.onclick = () => { demo.recording = !demo.recording; if (demo.recording && !demo.playing) togglePlay(); changed() }
-el.loop.onclick = () => { demo.loop = !demo.loop; changed() }
-el.metro.onclick = () => { demo.metronome = !demo.metronome; changed() }
-el.mono.onclick = () => { demo.mono = !demo.mono; changed() }
-el.ab.onclick = () => { demo.ab = !demo.ab; toast('info', demo.ab ? 'Reference: B (reference track)' : 'Reference: A (your mix)', 'Demo: no reference track loaded.'); changed() }
-$('.headroom').onclick = () => { demo.peakDb = -Infinity; demo.clipped = false; changed() }
+$('.headroom').onclick = () => { tp.peakDb = -Infinity; tp.clipped = false; changed() }
 $('#device').onclick = () => openSettings('Audio')
 $('#gear').onclick = () => openSettings()
 
@@ -168,14 +165,12 @@ function renderHeaders() {
     <div class="track ${t.id === ui.selTrack ? 'sel' : ''}" data-id="${t.id}" style="--c:${trackColor(t.id)}">
       <div class="color"></div>
       <div class="body">
-        <div class="row1"><span class="kind">${t.kind === 'audio' ? icon.wave : icon.keys}</span><span class="tname">${esc(t.name)}</span>
-          ${t.kind === 'instrument' ? `<button class="slot" title="Instrument (demo)">${esc(demo.instrument.get(t.id) ?? 'No instrument')}</button>` : ''}</div>
+        <div class="row1"><span class="kind" title="${t.kind === 'audio' ? 'Audio track' : 'Instrument track: notes only until instruments are hosted'}">${t.kind === 'audio' ? icon.wave : icon.keys}</span><span class="tname">${esc(t.name)}</span></div>
         <div class="row2">
-          <button class="tbtn r ${demo.armed.has(t.id) ? 'on' : ''}" title="Arm for recording (demo)">R</button>
           <button class="tbtn m ${t.mute ? 'on' : ''}" title="Mute (M)">M</button>
           <button class="tbtn s ${t.solo ? 'on' : ''}" title="Solo (S)">S</button>
-          <span style="flex:1"></span>
-          <span class="knob-num gain" title="Gain: drag, Shift for fine, double-click for 0 dB">${fmtDb(t.gain_db)} dB</span>
+          <div class="hfader" title="Volume: drag, Shift for fine, double-click for 0 dB" style="--p:${dbToPos(t.gain_db)}"><div class="rail"></div><div class="fill"></div><div class="thumb"></div></div>
+          <span class="knob-num gain" title="Volume: drag, Shift for fine, double-click for 0 dB">${fmtDb(t.gain_db)} dB</span>
           <span class="knob-num pan" title="Pan: drag, double-click to centre">${fmtPan(t.pan)}</span>
         </div>
       </div>
@@ -187,11 +182,28 @@ function renderHeaders() {
     row.onpointerdown = () => { if (ui.selTrack !== id) { ui.selTrack = id; changed() } }
     row.oncontextmenu = (e) => { e.preventDefault(); ui.selTrack = id; changed(); trackMenu(t, { x: e.clientX, y: e.clientY }) }
     $('.tname', row).ondblclick = () => rename(t)
-    $('.r', row).onclick = (e) => { e.stopPropagation(); demo.armed.has(id) ? demo.armed.delete(id) : demo.armed.add(id); changed() }
     $('.m', row).onclick = (e) => { e.stopPropagation(); toggleMute(id) }
     $('.s', row).onclick = (e) => { e.stopPropagation(); toggleSolo(id) }
-    row.querySelector<HTMLElement>('.slot')?.addEventListener('click', (e) => { e.stopPropagation(); openPluginPicker(t, 'Instrument') })
-    const g = $('.gain', row), p = $('.pan', row)
+    const g = $('.gain', row), p = $('.pan', row), hf = $('.hfader', row)
+    // The slider is the mixer's fader lying down: the same travel, the same command.
+    hf.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return
+      e.preventDefault(); e.stopPropagation()
+      try { hf.setPointerCapture(e.pointerId) } catch { /* synthetic event */ }
+      const start = dbToPos(t.gain_db), x0 = e.clientX, w = Math.max(1, hf.clientWidth - 8)
+      let db = t.gain_db
+      const mv = (m: PointerEvent) => {
+        db = posToDb(Math.min(1, Math.max(0, start + (m.clientX - x0) / w * (m.shiftKey ? 0.1 : 1))))
+        hf.style.setProperty('--p', String(dbToPos(db)))
+        g.textContent = `${fmtDb(db)} dB`
+      }
+      const up = () => {
+        hf.removeEventListener('pointermove', mv); hf.removeEventListener('pointerup', up); hf.removeEventListener('pointercancel', up)
+        if (db !== t.gain_db) run(`track.gain #${id} ${db}`)
+      }
+      hf.addEventListener('pointermove', mv); hf.addEventListener('pointerup', up); hf.addEventListener('pointercancel', up)
+    })
+    hf.addEventListener('dblclick', (e) => { e.stopPropagation(); run(`track.gain #${id} 0`) })
     dragNumber(g, () => t.gain_db, { min: -60, max: 24, perPx: 0.25, step: 0.1, reset: 0, preview: (v) => (g.textContent = `${fmtDb(v)} dB`), commit: (v) => run(`track.gain #${id} ${+v.toFixed(1)}`) })
     dragNumber(p, () => t.pan * 100, { min: -100, max: 100, perPx: 1, step: 1, reset: 0, preview: (v) => (p.textContent = fmtPan(v / 100)), commit: (v) => run(`track.pan #${id} ${Math.round(v)}`) })
   })
@@ -256,7 +268,7 @@ function pasteClips(trackId?: number | null, at?: number) {
 function duplicateClips() { const s = selIds(); if (s.length) runSelecting(`clip.copy ${ids(s)}`) }
 function deleteClips() { const s = selIds(); if (s.length) { run(`clip.remove ${ids(s)}`); selectClips([]) } }
 function splitClips() {
-  const at = Math.round(demo.pos * PPQ)
+  const at = Math.round(tp.pos * PPQ)
   let s = selIds()
   if (!s.length) s = state.project.clips.filter((c) => c.track === ui.selTrack && c.start < at && c.start + c.length > at).map((c) => c.id)
   if (!s.length) return toast('info', 'Nothing to split', 'Put the playhead over a clip, select it, then Ctrl+E.')
@@ -390,23 +402,25 @@ function frame(now: number) {
   const dt = Math.min(0.1, (now - last) / 1000)
   last = now
   advance(dt)
-  if (demo.playing) follow()
+  if (tp.playing) follow()
   draw(); drawMeters(); updateReadouts()
   const ms = performance.now() - t0
   perf.frames++; perf.totalMs += ms; perf.worstMs = Math.max(perf.worstMs, ms)
   if (settling()) requestAnimationFrame(frame)
   else looping = false
 }
-if (import.meta.env.DEV) Object.assign(window, { __crucible: { perf, draw, drawMeters, state: () => state, ui, demo, run, changed, flush, advance, togglePlay } })
+if (import.meta.env.DEV) Object.assign(window, { __crucible: { perf, draw, drawMeters, state: () => state, ui, tp, run, changed, flush, advance, togglePlay } })
 
 // ------------------------------------------------------------------ render on change
 onChange(() => {
-  seedPlugins(state.project.tracks)
   if (ui.selTrack !== null && !track(ui.selTrack)) ui.selTrack = null
   if ([...ui.selClips].some((i) => !clip(i))) selectClips([...ui.selClips].filter((i) => clip(i)))
   if (ui.selClip !== null && !clip(ui.selClip)) ui.selClip = null
   clampScroll()
   rows.style.transform = `translateY(${-ui.scrollY}px)`
+  // With a mouse button held, only the canvas is redrawn. Rebuilding the page now would replace
+  // the element being clicked or dragged; it is rebuilt when the button is released.
+  if (pointerHeld()) { owe(); draw(); return }
   updateTop()
   renderHeaders()
   renderTabs()
@@ -416,6 +430,8 @@ onChange(() => {
 
 // ------------------------------------------------------------------ keyboard
 addEventListener('keydown', (e) => {
+  // F9 marks the moment in the log. It works everywhere, also while typing or in a dialog.
+  if (e.key === 'F9' && !e.repeat) { e.preventDefault(); return markPrompt() }
   if (e.target instanceof Element && e.target.matches('input, select, textarea')) return
   if (e.key === 'Escape' && layerOpen()) return closeLayer()
   if (layerOpen()) return
@@ -446,10 +462,7 @@ addEventListener('keydown', (e) => {
   }
   switch (e.key) {
     case ' ': handled(); togglePlay(); break
-    case 'Home': case 'Enter': handled(); demo.pos = 0; changed(); break
-    case 'r': case 'R': el.rec.click(); break
-    case 'l': case 'L': el.loop.click(); break
-    case 'k': case 'K': el.metro.click(); break
+    case 'Home': case 'Enter': handled(); tp.pos = 0; changed(); break
     case 'm': case 'M': if (sel) toggleMute(sel); break
     case 's': case 'S': if (sel) toggleSolo(sel); break
     case 'Delete': case 'Backspace':
@@ -483,12 +496,9 @@ addEventListener('keydown', (e) => {
 async function start() {
   ui.log.push({ kind: 'help', text: `Crucible console. Connected to the engine through the ${transportName}. Type help.` })
   await run('project.state', { quiet: true })
-  // An empty engine gets the demo song, built by the engine itself in one undoable step.
-  if (!state.project.tracks.length) await run('project.demo', { quiet: true })
   await loadKinds()
-  ui.selTrack = state.project.tracks[2]?.id ?? null
-  const first = state.project.clips.find((c) => c.track === ui.selTrack)
-  if (first) selectClips([first.id])
+  ui.selTrack = state.project.tracks[0]?.id ?? null
+  watchDevices()
   document.fonts?.ready.then(() => changed()) // canvases redraw once the bundled fonts are in
   const help = await run('help', { quiet: true })
   setCommandNames([...(help[0]?.text ?? '').matchAll(/^\s{2}([a-z][\w.]*)/gm)].map((m) => m[1]))

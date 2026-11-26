@@ -47,4 +47,5 @@ the real window (only the browser view was driven).
 | 8 | Laptop without ASIO: play | Top bar says `exclusive`; other programs go quiet while it plays and come back on Stop | | |
 | 9 | Install `dist\installer\Crucible_0.0.1_x64_en-US.msi` on another PC | Start menu entry "Crucible", it opens, Apps list shows it and can remove it. SmartScreen warns "unknown publisher": More info, Run anyway | | |
 
-If something fails, send `crucible report` output.
+If something fails: press F9 when it happens, then Settings, Diagnostics, Create report file,
+and send that file (needs build 0.0.2 or later; on 0.0.1 send `crucible report` output).

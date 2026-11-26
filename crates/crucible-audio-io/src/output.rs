@@ -366,6 +366,8 @@ fn start(
     while granted.load(Ordering::Relaxed) == 0 && t0.elapsed() < Duration::from_millis(500) {
         std::thread::sleep(Duration::from_millis(2));
     }
+    // Shared mode often starts with a short request and settles on a longer one.
+    std::thread::sleep(Duration::from_millis(60));
     let buffer_frames = granted.load(Ordering::Relaxed) as u32;
     Ok((
         stream,
