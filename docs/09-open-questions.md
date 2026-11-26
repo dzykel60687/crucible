@@ -22,7 +22,7 @@ strike it here with the date.
 | Q9 | Should the built-in EQ, compressor and reverb from `..\music-editor` be included, or should effects be VST3 only? **Partly answered 2026-11-23:** Dzyan wants a few very refined built-in tools, "not excessive amounts": Reverb, Delay, Echo, with reverb that is accurate and authentic (he named ReaVerb as the bar). Research: `docs/13-reverb-and-delay.md`. EQ and compressor still open. | Scope of M4 | M4 |
 | Q10 | Confirm the *Proposed* decisions: D-005, D-013 to D-017, D-030 to D-034. (D-011 was replaced by D-036; the overlapping-clips part of D-031 is decided.) | So they stop being assumptions | Before M2 |
 | ~~Q12~~ | ~~Overlapping clips on one track: sum them, or let the later one win?~~ **Answered 2026-11-23: both play** (summed, as built). | | |
-| Q13 | Files at another sample rate: keep refusing (built), or add a converter at import (the `rubato` crate, MIT) with a visible "converted from 44.1 kHz" note? | MP3s are usually 44.1 kHz; a 48 kHz project refuses them today | When he imports real material |
+| ~~Q13~~ | ~~Files at another sample rate: keep refusing, or convert at import?~~ **Answered 2026-11-25: offer to convert** (D-039). | | |
 
 ## B. Unverified technical claims
 

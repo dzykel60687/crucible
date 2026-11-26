@@ -24,7 +24,7 @@ mod platform;
 pub use codes::{Code, CodeExt, DawError, Severity, find_code};
 pub use platform::{describe_exit, exception_name, quiet_command};
 pub use session::{
-    clock_before, dropped_realtime_records, error, data_dir, event, file_stamp, finish, info, log_dirs, log_path, mark_realtime_thread, note, raw, report_dir,
+    clock_before, dropped_realtime_records, error, data_dir, event, everything, file_stamp, finish, info, log_dirs, log_path, mark_realtime_thread, note, raw, report_dir,
     set_verbose, source, start, start_child, warn,
 };
-pub use system::{exe_fingerprint, process_memory_mb, system_summary};
+pub use system::{ProcessWatch, exe_fingerprint, process_memory_mb, system_summary};

@@ -14,10 +14,14 @@ use crucible_diagnostics::{self as diag, Code, DawError};
 use crucible_engine::{Engine, Reply, command, trail};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-struct Shared(Mutex<Engine>);
+struct Shared(Arc<Mutex<Engine>>);
+
+/// Whether the window is in front, for the once-a-second line.
+static IN_FRONT: AtomicBool = AtomicBool::new(false);
 
 impl Shared {
     /// A panic inside a command poisons the lock; the engine restores its own snapshot on
@@ -29,6 +33,17 @@ impl Shared {
 
 /// The command running now and when it began, for the watchdog.
 static RUNNING: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+
+/// True at most four times a second: for events that arrive in a stream.
+fn not_too_often() -> bool {
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|p| p.into_inner());
+    if last.is_some_and(|t| t.elapsed() < Duration::from_millis(250)) {
+        return false;
+    }
+    *last = Some(Instant::now());
+    true
+}
 
 /// Marks a command as running until dropped, also when the command panics.
 struct Busy;
@@ -46,15 +61,35 @@ impl Drop for Busy {
     }
 }
 
-/// Says so in the log when a command has been running for 5, 30, 120 and 600 seconds. If the
-/// window ever hangs, the log's last such line names the command that never came back.
-fn start_watchdog() {
+/// One thread, once a second, for two jobs:
+/// - It says so in the log when a command has been running for 5, 30, 120 and 600 seconds. If
+///   the window ever hangs, the log's last such line names the command that never came back.
+/// - While the log records everything (test builds), it writes an `ALIVE` line every second:
+///   what the engine is doing, how playback did in that second, memory and processor use. The
+///   log then fills steadily while the program runs, and the last line before a gap is the last
+///   moment the program was well.
+fn start_watchdog(engine: Arc<Mutex<Engine>>) {
     const AFTER: [u64; 4] = [5, 30, 120, 600];
-    let spawned = std::thread::Builder::new().name("crucible watchdog".into()).spawn(|| {
+    let spawned = std::thread::Builder::new().name("crucible watchdog".into()).spawn(move || {
         let mut warned: Option<(Instant, usize)> = None;
+        let mut process = diag::ProcessWatch::start();
         loop {
             std::thread::sleep(Duration::from_secs(1));
             let running = RUNNING.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if diag::everything() {
+                // Never waits for the engine: a command that holds it is itself the news.
+                let doing = match engine.try_lock() {
+                    Ok(e) => e.alive(),
+                    Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner().alive(),
+                    Err(std::sync::TryLockError::WouldBlock) => match &running {
+                        Some((text, began)) => format!("busy for {:.1} s with: {text}", began.elapsed().as_secs_f64()),
+                        None => "busy with a command".to_string(),
+                    },
+                };
+                let (memory, cpu) = process.as_mut().map_or((0.0, 0.0), |p| p.sample());
+                let front = if IN_FRONT.load(Ordering::Relaxed) { "in front" } else { "in the background" };
+                diag::event("ALIVE", format!("{doing} | window {front} | memory {memory:.0} MB, processor {cpu:.0}%"));
+            }
             let Some((text, began)) = running else {
                 warned = None;
                 continue;
@@ -189,9 +224,10 @@ fn report(shared: &Shared, out: Option<PathBuf>) -> Result<Reply, DawError> {
 fn main() {
     diag::start("crucible-app", "window");
     diag::info(format!("window: Tauri {}, web view {}", tauri::VERSION, tauri::webview_version().unwrap_or_else(|e| format!("unknown ({e})"))));
-    start_watchdog();
+    let engine = Arc::new(Mutex::new(Engine::new()));
+    start_watchdog(engine.clone());
     let app = tauri::Builder::default()
-        .manage(Shared(Mutex::new(Engine::new())))
+        .manage(Shared(engine))
         .invoke_handler(tauri::generate_handler![exec])
         .build(tauri::generate_context!());
     match app {
@@ -199,7 +235,13 @@ fn main() {
         // its Exit event; code after `run` never runs. Before 2026-11-22 logs had no end line.
         Ok(app) => app.run(|app, event| match event {
             tauri::RunEvent::WindowEvent { event, .. } => match event {
-                tauri::WindowEvent::Focused(on) => diag::event("UI", format!("did: window {}", if on { "came to the front" } else { "went to the background" })),
+                tauri::WindowEvent::Focused(on) => {
+                    IN_FRONT.store(on, Ordering::Relaxed);
+                    diag::event("UI", format!("did: window {}", if on { "came to the front" } else { "went to the background" }));
+                }
+                // A resize or a move arrives as a stream of events: a few a second is the whole story.
+                tauri::WindowEvent::Resized(size) if diag::everything() && not_too_often() => diag::event("UI", format!("saw: window is {}x{} pixels", size.width, size.height)),
+                tauri::WindowEvent::Moved(at) if diag::everything() && not_too_often() => diag::event("UI", format!("saw: window moved to {},{}", at.x, at.y)),
                 tauri::WindowEvent::CloseRequested { .. } => diag::event("UI", "did: asked the window to close"),
                 tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } => diag::event("UI", format!("saw: display scale is now {scale_factor}")),
                 _ => {}

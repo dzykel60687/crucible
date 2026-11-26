@@ -227,6 +227,53 @@ pub struct Endpoint {
     pub used_by: Vec<String>,
 }
 
+/// The one name in `candidates` that best fits `wanted`, or `None` if none fits or several fit
+/// equally well. A device has different names under different drivers: Windows calls an
+/// interface "OUT 1-2 (BEHRINGER UMC 202HD 192k)" where its ASIO driver is "UMC ASIO Driver".
+/// A plain "contains" match is tried first; then the names' distinctive words are compared
+/// (generic words such as "audio", "out" or "driver" do not count).
+pub fn closest_name<'a>(wanted: &str, candidates: &'a [String]) -> Option<&'a str> {
+    let lower = wanted.to_lowercase();
+    let contains: Vec<&String> = candidates.iter().filter(|c| c.to_lowercase().contains(&lower) || lower.contains(&c.to_lowercase())).collect();
+    if contains.len() == 1 {
+        return Some(contains[0]);
+    }
+    const GENERIC: &[&str] = &[
+        "out", "outs", "output", "outputs", "in", "input", "inputs", "audio", "usb", "driver", "drivers", "asio", "wasapi", "speaker", "speakers",
+        "headphones", "line", "device", "high", "definition", "the", "and", "for", "digital", "analog", "stereo", "main", "playback", "interface",
+    ];
+    let words = |s: &str| -> Vec<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3 && !GENERIC.contains(w) && !w.chars().all(|c| c.is_ascii_digit()))
+            .map(str::to_string)
+            .collect()
+    };
+    let want = words(wanted);
+    let mut scored: Vec<(usize, &String)> = candidates.iter().map(|c| (words(c).iter().filter(|w| want.contains(w)).count(), c)).filter(|(n, _)| *n > 0).collect();
+    scored.sort_by_key(|s| std::cmp::Reverse(s.0));
+    match scored.as_slice() {
+        [(_, only)] => Some(only),
+        [(a, best), (b, _), ..] if a > b => Some(best),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    #[test]
+    fn one_interface_under_two_drivers_is_recognised() {
+        let asio = vec!["UMC ASIO Driver".to_string(), "ASIO4ALL v2".to_string(), "FL Studio ASIO".to_string()];
+        assert_eq!(super::closest_name("OUT 1-2 (BEHRINGER UMC 202HD 192k)", &asio), Some("UMC ASIO Driver"));
+        assert_eq!(super::closest_name("Speakers (Realtek(R) Audio)", &asio), None, "nothing in common");
+        let wasapi = vec!["Speakers (Realtek(R) Audio)".to_string(), "OUT 1-2 (BEHRINGER UMC 202HD 192k)".to_string()];
+        assert_eq!(super::closest_name("UMC ASIO Driver", &wasapi), Some("OUT 1-2 (BEHRINGER UMC 202HD 192k)"));
+        assert_eq!(super::closest_name("realtek", &wasapi), Some("Speakers (Realtek(R) Audio)"), "part of a name still works");
+        let two = vec!["Lynx AES16e ASIO".to_string(), "Lynx Hilo ASIO".to_string()];
+        assert_eq!(super::closest_name("Lynx", &two), None, "two equally good: no guess");
+    }
+}
+
 /// Every active audio device: quick, opens nothing, safe to call while audio runs.
 pub fn endpoints() -> Result<Vec<Endpoint>, DawError> {
     #[cfg(windows)]

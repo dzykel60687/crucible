@@ -88,7 +88,7 @@ svg { display: block; }
 #topbar .group { display: flex; align-items: center; gap: 4px; }
 #topbar .sep { width: 1px; height: 28px; background: var(--line); }
 #topbar .spacer { flex: 1; }
-.logo { width: 26px; height: 26px; color: var(--accent); flex: none; }
+.logo { width: 50px; height: 26px; color: var(--accent); flex: none; }
 .project-btn { height: 36px; padding: 0 10px; gap: 8px; color: var(--text); font-weight: 600; font-size: 14px; max-width: 260px; }
 .project-btn .name { overflow: hidden; text-overflow: ellipsis; }
 .project-btn .dirty { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); opacity: 0; transition: opacity var(--t); }

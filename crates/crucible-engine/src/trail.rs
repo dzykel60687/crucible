@@ -43,7 +43,7 @@ pub(crate) static SPECS: &[Spec<Engine>] = &[
         effect: Effect::Read,
         run: log_ui,
     },
-    Spec { name: "log.path", args: &[], help: "Where this run's log file is.", effect: Effect::Read, run: log_path },
+    Spec { name: "log.path", args: &[], help: "Where this run's log file is, and whether it records everything.", effect: Effect::Read, run: log_path },
     Spec {
         name: "log.snapshot",
         args: &[],
@@ -63,6 +63,8 @@ fn quiet(name: &str) -> bool {
 /// Returned by [`begin`], handed to [`end`].
 pub struct Stamp {
     quiet: bool,
+    /// Long answers that are the same every time (the command list): one line is enough.
+    brief: bool,
     started: Instant,
 }
 
@@ -72,14 +74,17 @@ pub fn begin(tokens: &[String]) -> Stamp {
     if !quiet {
         diag::info(format!("> {}", tokens.join(" ")));
     }
-    Stamp { quiet, started: Instant::now() }
+    let brief = tokens.first().is_some_and(|n| matches!(n.as_str(), "help" | "fx.kinds" | "codes"));
+    Stamp { quiet, brief, started: Instant::now() }
 }
 
 /// Call with the command's result: logs `< ok in 1.2 ms: what it answered`, or `< FAILED E5017`.
 /// The error's own detail is logged by whoever reports it to the person.
 pub fn end(stamp: Stamp, result: &Result<Reply, DawError>) {
     if !stamp.quiet {
-        diag::info(outcome(result, stamp.started.elapsed()));
+        // Testing builds log the whole answer; a released one would log its first lines.
+        let lines = if stamp.brief { 1 } else if diag::everything() { 400 } else { REPLY_LINES };
+        diag::info(outcome(result, stamp.started.elapsed(), lines));
     }
 }
 
@@ -89,18 +94,18 @@ fn took(d: Duration) -> String {
     if d >= SLOW { format!("{text} (slow)") } else { text }
 }
 
-fn outcome(result: &Result<Reply, DawError>, d: Duration) -> String {
+fn outcome(result: &Result<Reply, DawError>, d: Duration, max_lines: usize) -> String {
     match result {
         Err(e) => format!("< FAILED {} in {}", e.code.id(), took(d)),
         Ok(r) => {
             let text = r.text.trim_end();
-            if text.is_empty() {
+            if text.is_empty() || r.logged {
                 return format!("< ok in {}", took(d));
             }
             let mut out = format!("< ok in {}: ", took(d));
             let (mut lines, mut chars) = (0, 0);
             for l in text.lines() {
-                if lines == REPLY_LINES || chars + l.len() > REPLY_CHARS {
+                if lines == max_lines || chars + l.len() > REPLY_CHARS.max(max_lines * 200) {
                     out.push_str(&format!("\n(+{} more lines, not logged)", text.lines().count() - lines));
                     break;
                 }
@@ -126,7 +131,7 @@ fn mark(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     }
     line.push_str(&format!(" | {}", play::where_now(e, ago)));
     diag::event("MARK", &line);
-    Ok(Reply::new(format!("Marked in the log: {said}"), json!({ "log": diag::log_path(), "line": line })))
+    Ok(Reply::new(format!("Marked in the log: {said}"), json!({ "log": diag::log_path(), "line": line })).logged())
 }
 
 fn log_ui(_: &mut Engine, a: &Args) -> Result<Reply, DawError> {
@@ -142,7 +147,7 @@ fn log_ui(_: &mut Engine, a: &Args) -> Result<Reply, DawError> {
 
 fn log_path(_: &mut Engine, _: &Args) -> Result<Reply, DawError> {
     let path = diag::log_path();
-    Ok(Reply::new(path.as_ref().map_or("No log: the file could not be created".to_string(), |p| p.display().to_string()), json!({ "log": path })))
+    Ok(Reply::new(path.as_ref().map_or("No log: the file could not be created".to_string(), |p| p.display().to_string()), json!({ "log": path, "everything": diag::everything() })))
 }
 
 fn log_snapshot(e: &mut Engine, _: &Args) -> Result<Reply, DawError> {
@@ -190,12 +195,14 @@ mod tests {
     #[test]
     fn outcome_lines_say_what_happened_and_how_long_it_took() {
         let ms = Duration::from_micros;
-        assert_eq!(outcome(&Ok(Reply::text("")), ms(1200)), "< ok in 1.2 ms");
-        assert_eq!(outcome(&Ok(Reply::text("Added track 'Piano'\n")), ms(300)), "< ok in 0.3 ms: Added track 'Piano'");
-        assert_eq!(outcome(&Ok(Reply::text("a\nb")), ms(2_315_000)), "< ok in 2315 ms (slow): a\nb");
-        assert_eq!(outcome(&Err(DawError::new(Code::SampleRateMismatch, "x")), ms(900)), "< FAILED E5017 in 0.9 ms");
+        assert_eq!(outcome(&Ok(Reply::text("")), ms(1200), 12), "< ok in 1.2 ms");
+        assert_eq!(outcome(&Ok(Reply::text("Added track 'Piano'\n")), ms(300), 12), "< ok in 0.3 ms: Added track 'Piano'");
+        assert_eq!(outcome(&Ok(Reply::text("a\nb")), ms(2_315_000), 12), "< ok in 2315 ms (slow): a\nb");
+        assert_eq!(outcome(&Ok(Reply::text("a\nb").logged()), ms(300), 12), "< ok in 0.3 ms", "a command that wrote its own log line is not repeated");
+        assert_eq!(outcome(&Ok(Reply::text("a\nb\nc")), ms(300), 1), "< ok in 0.3 ms: a\n(+2 more lines, not logged)");
+        assert_eq!(outcome(&Err(DawError::new(Code::SampleRateMismatch, "x")), ms(900), 12), "< FAILED E5017 in 0.9 ms");
         let long = (0..40).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let o = outcome(&Ok(Reply::text(long)), ms(10));
+        let o = outcome(&Ok(Reply::text(long)), ms(10), 12);
         assert!(o.contains("line 11") && !o.contains("line 12\n") && o.ends_with("(+28 more lines, not logged)"), "{o}");
         assert_eq!(took(Duration::from_secs(12)), "12.0 s (slow)");
     }

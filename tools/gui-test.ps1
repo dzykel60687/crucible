@@ -18,7 +18,10 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$Port"
 $app = Start-Process -FilePath $Exe -PassThru
 try {
   $more = [string[]]@("$Port")
-  if (-not $NoDropouts) { $more += (Join-Path $PSScriptRoot 'freeze-thread.ps1') }
+  if (-not $NoDropouts) { $more += (Join-Path $PSScriptRoot 'freeze-thread.ps1') } else { $more += '' }
+  # A 44.1 kHz file, for the convert question.
+  $cd = Join-Path $PSScriptRoot '..\dist\test-audio\cd-44k1.wav'
+  if (Test-Path $cd) { $more += (Resolve-Path $cd).Path }
   node (Join-Path $PSScriptRoot 'gui-test.mjs') @more
   $code = $LASTEXITCODE
 } finally {

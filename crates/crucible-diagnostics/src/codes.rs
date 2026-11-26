@@ -169,8 +169,8 @@ codes! {
         "Imported audio is copied into the project's folder, so save the project once (`project.save <folder>`), then import.";
     AudioFileUnreadable = "E5016", "The audio file could not be read",
         "Crucible reads WAV (16, 24 or 32-bit integer, or 32-bit float), MP3 and FLAC, mono or stereo. The message gives the file and the reason.";
-    SampleRateMismatch = "E5017", "The audio file's sample rate differs from the project's",
-        "Crucible does not resample yet (it never does so silently). Set the project to the file's rate with `project.rate`, or convert the file first.";
+    SampleRateMismatch = "E5017", "The audio is at another sample rate than the project",
+        "The message names both rates. Convert it (the window asks; with commands, add --convert): the file is kept as it is and converted while it plays. Or set the project to the file's rate with project.rate.";
     AudioMissing = "E5018", "An audio file the project uses is missing",
         "The file should be in the project's `audio` folder. Copy it back there; the message names it.";
     ExportFailed = "E5019", "The export could not be written",
@@ -181,6 +181,8 @@ codes! {
         "Effects are numbered from 1 on each track, top to bottom. `fx.list <track>` shows them.";
     EffectRefused = "E5022", "That effect setting is not possible",
         "The message says why: an unknown effect or setting, a value out of range, or an impulse-response file Crucible cannot use. `fx.kinds` lists every effect and setting.";
+    ConvertFailed = "E5023", "Audio could not be converted to the project's sample rate",
+        "The message says why. Send a report (Settings, Diagnostics, Create report file), and use the file at its own rate meanwhile.";
 
     // ---- 9: crashes and bugs
     NativeCrash = "E9001", "The program crashed",

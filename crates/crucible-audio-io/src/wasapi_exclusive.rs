@@ -168,12 +168,22 @@ fn open_render(device_name: Option<&str>, rate: u32, period_frames: Option<u32>)
     let name = device.get_friendlyname().unwrap_or_default();
     let channels = device_channels(&device);
     let mut client = device.get_iaudioclient().map_err(|e| explain(&e))?;
+    // Before the stream starts this thread may still write to the log. Every step of the
+    // negotiation is recorded while the log records everything: this is where machines differ.
+    let say = |text: String| {
+        if crucible_diagnostics::everything() {
+            crucible_diagnostics::event("AUDIO", format!("exclusive mode, {name}: {text}"));
+        }
+    };
+    say(format!("{channels} channels; asking for {rate} Hz"));
 
     let (format, fmt, label) = FORMATS
         .iter()
         .find_map(|(store, valid, kind, fmt, label)| {
             let f = WaveFormat::new(*store, *valid, *kind, rate as usize, channels, None);
-            client.is_supported_exclusive_with_quirks(&f).ok().map(|f| (f, *fmt, *label))
+            let answer = client.is_supported_exclusive_with_quirks(&f);
+            say(format!("{label}: {}", answer.as_ref().map_or_else(|e| format!("refused ({e})"), |_| "accepted".to_string())));
+            answer.ok().map(|f| (f, *fmt, *label))
         })
         .ok_or_else(|| {
             DawError::new(Code::FormatNotSupported, format!("{name} accepts none of the tested formats at {rate} Hz in exclusive mode"))
@@ -189,6 +199,7 @@ fn open_render(device_name: Option<&str>, rate: u32, period_frames: Option<u32>)
         .calculate_aligned_period_near(wanted, Some(128), &format)
         .map_err(|e| explain(&e))?;
     let requested_period_ms = period as f64 / 10_000.0;
+    say(format!("smallest buffer the driver offers {:.2} ms; asking for {requested_period_ms:.2} ms{}", min_period as f64 / 10_000.0, if period_frames.is_some() { " (chosen in Settings)" } else { "" }));
 
     // Exclusive mode can refuse an unaligned buffer. Microsoft's documented recovery is to
     // re-create the client with the size the driver suggests.
@@ -198,6 +209,7 @@ fn open_render(device_name: Option<&str>, rate: u32, period_frames: Option<u32>)
         }
         let frames = client.get_buffer_size().map_err(|e| explain(&e))?;
         period = wasapi::calculate_period_100ns(frames as i64, rate as i64);
+        say(format!("that size is not aligned for this driver; it suggests {frames} frames, asking again"));
         client = device.get_iaudioclient().map_err(|e| explain(&e))?;
         client
             .initialize_client(&format, Direction::Render, StreamMode::EventsExclusive { period_hns: period }, None)
@@ -207,6 +219,7 @@ fn open_render(device_name: Option<&str>, rate: u32, period_frames: Option<u32>)
     let event = client.set_get_eventhandle().map_err(|e| explain(&e))?;
     let render = client.get_audiorenderclient().map_err(|e| explain(&e))?;
     let buffer_frames = client.get_buffer_size().map_err(|e| explain(&e))?;
+    say(format!("opened with a {buffer_frames}-frame buffer"));
 
     Ok(Opened {
         client,
@@ -451,6 +464,16 @@ fn find_render_device(enumerator: &DeviceEnumerator, needle: &str) -> Result<was
             if name.to_lowercase().contains(&lower) {
                 matches.push((name, d));
             }
+        }
+    }
+    if matches.is_empty() {
+        // Perhaps the name of the same interface under another driver (its ASIO driver's name).
+        let names: Vec<String> = (0..count).filter_map(|i| collection.get_device_at_index(i).ok()?.get_friendlyname().ok()).collect();
+        if let Some(name) = crate::closest_name(needle, &names)
+            && let Some(i) = names.iter().position(|n| n == name)
+            && let Ok(d) = collection.get_device_at_index(i as u32)
+        {
+            return Ok(d);
         }
     }
     match matches.len() {

@@ -144,14 +144,21 @@ fn bad(msg: String) -> DawError {
 pub struct Reply {
     pub text: String,
     pub data: Json,
+    /// The command wrote its own line to the log saying all of this, so the log's outcome line
+    /// leaves the text out instead of repeating it.
+    pub logged: bool,
 }
 
 impl Reply {
     pub fn new(text: impl Into<String>, data: Json) -> Self {
-        Reply { text: text.into(), data }
+        Reply { text: text.into(), data, logged: false }
     }
     pub fn text(text: impl Into<String>) -> Self {
-        Reply { text: text.into(), data: Json::Null }
+        Reply { text: text.into(), data: Json::Null, logged: false }
+    }
+    pub fn logged(mut self) -> Self {
+        self.logged = true;
+        self
     }
 }
 

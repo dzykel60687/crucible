@@ -15,6 +15,7 @@ export interface Device {
 }
 export interface DeviceList {
   outputs: Device[]; inputs: Device[]; asio: string[]; probed: boolean; changes: string[]; generation: number
+  midi: string[]; midi_error: string | null
   choice: { driver: string | null; device: string | null; buffer: number | null }
   project_rate: number; playing: boolean
 }
@@ -61,26 +62,71 @@ export function watchDevices() {
   }, 2000)
 }
 
-/** The output playback will use: the chosen one if it is connected, else the system default. */
+/** The one name in `names` that best fits `wanted`: the same interface is called "OUT 1-2
+ *  (BEHRINGER UMC 202HD 192k)" by Windows and "UMC ASIO Driver" by its ASIO driver. Mirrors
+ *  `closest_name` in crucible-audio-io, which decides what really opens. */
+const GENERIC = new Set(['out', 'outs', 'output', 'outputs', 'in', 'input', 'inputs', 'audio', 'usb', 'driver', 'drivers', 'asio', 'wasapi', 'speaker', 'speakers', 'headphones', 'line', 'device', 'high', 'definition', 'the', 'and', 'for', 'digital', 'analog', 'stereo', 'main', 'playback', 'interface'])
+const words = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3 && !GENERIC.has(w) && !/^\d+$/.test(w))
+export function closestName(wanted: string, names: string[]): string | null {
+  const w = wanted.toLowerCase()
+  const contains = names.filter((n) => n.toLowerCase().includes(w) || w.includes(n.toLowerCase()))
+  if (contains.length === 1) return contains[0]
+  const want = words(wanted)
+  const scored = names.map((n) => [words(n).filter((x) => want.includes(x)).length, n] as const).filter(([k]) => k > 0).sort((a, b) => b[0] - a[0])
+  return scored.length === 1 || (scored.length > 1 && scored[0][0] > scored[1][0]) ? scored[0][1] : null
+}
+
+/** The Windows output playback will use: the chosen one if it is connected, else the default. */
 export function chosenOutput(d: DeviceList | null = devices): Device | null {
   if (!d) return null
-  const want = d.choice.device?.toLowerCase()
-  return (want ? d.outputs.find((o) => o.name.toLowerCase().includes(want)) : null) ?? d.outputs.find((o) => o.default) ?? d.outputs[0] ?? null
+  const names = d.outputs.map((o) => o.name)
+  const pick = d.choice.device ? closestName(d.choice.device, names) : null
+  return d.outputs.find((o) => o.name === pick) ?? d.outputs.find((o) => o.default) ?? d.outputs[0] ?? null
+}
+
+/** The ASIO driver that belongs to the chosen output, if any. */
+export function chosenAsio(d: DeviceList | null = devices): string | null {
+  if (!d?.asio.length) return null
+  if (!d.choice.device) return d.asio[0]
+  return closestName(d.choice.device, d.asio) ?? (d.asio.length === 1 && d.choice.driver === 'asio' ? d.asio[0] : null)
 }
 
 const DRIVERS: [string, string, string][] = [
-  ['auto', 'Automatic', 'ASIO if a driver is installed, else Exclusive, else Shared.'],
-  ['asio', 'ASIO', "The interface's own driver: the lowest latency. Whether other programs can play at the same time is up to that driver."],
+  ['auto', 'Automatic', "ASIO if the chosen output has an ASIO driver, else Exclusive, else Shared."],
+  ['asio', 'ASIO', "The interface's own driver: the lowest latency, and it sets the interface to the project's rate. Whether other programs can play at the same time is up to that driver."],
   ['exclusive', 'Exclusive', 'Crucible takes the device while it plays: bit-exact and low latency. Other programs on this device are silent until you press Stop.'],
   ['shared', 'Shared', 'Other programs keep playing. Windows mixes the sound and converts it if the rates differ: not bit-exact, a little more latency.'],
 ]
 const BUFFERS = [0, 64, 128, 256, 512, 1024]
 
 const format = (x: Device) => (x.rate ? `${x.rate} Hz${x.bits ? `, ${x.bits}-bit` : ''}${x.channels ? `, ${x.channels} ch` : ''} in Windows` : 'rate unknown')
+const exclusiveRates = (x: Device) => [...new Set(x.exclusive?.formats.flatMap((f) => f.sample_rates) ?? [])].sort((a, b) => a - b)
 const row = (x: Device) => {
-  const ex = x.exclusive?.formats.length ? ` · exclusive: ${[...new Set(x.exclusive.formats.flatMap((f) => f.sample_rates))].sort((a, b) => a - b).join(', ')} Hz` : x.exclusive ? ' · no exclusive mode' : ''
+  const ex = x.exclusive?.formats.length ? ` · exclusive: ${exclusiveRates(x).join(', ')} Hz` : x.exclusive ? ' · no exclusive mode' : ''
   const used = x.used_by.length ? `<br><small style="color:var(--solo)">In use by ${esc(x.used_by.join(', '))}</small>` : ''
   return `<div><span class="grow">${esc(x.name)}<br><small>${esc(format(x) + ex)}</small>${used}</span>${x.default ? '<span class="tag live">default</span>' : ''}</div>`
+}
+const good = (s: string) => `<span style="color:var(--ok)">${s}</span>`
+const warn = (s: string) => `<span style="color:var(--solo)">${s}</span>`
+
+/** What will happen to the sample rate with this driver and output, in plain words. */
+function rateVerdict(d: DeviceList, out: Device | null, driver: string): string {
+  const rate = d.project_rate
+  if (driver === 'auto') driver = chosenAsio(d) ? 'asio' : 'exclusive'
+  if (driver === 'asio') {
+    const asio = chosenAsio(d)
+    if (!asio) return warn('No ASIO driver belongs to this output.') + ' Choose an ASIO driver above, or another driver.'
+    return good(`${esc(asio)} is set to the project's rate, ${rate} Hz, when playback starts.`) + ` Windows' own setting for the device${out?.rate ? ` (${out.rate} Hz)` : ''} does not apply to ASIO. Nothing is converted.`
+  }
+  if (!out) return ''
+  if (driver === 'exclusive') {
+    const rates = exclusiveRates(out)
+    if (!out.exclusive) return 'Checking which rates this device takes in exclusive mode…'
+    if (rates.includes(rate)) return good(`Exclusive mode plays ${rate} Hz directly.`) + ' Nothing is converted.'
+    return warn(`In exclusive mode this device takes only ${rates.join(', ') || 'no tested rate'} Hz, not the project's ${rate} Hz.`) + ` Use its ASIO driver, or set the project to ${rates.join(' or ') || 'a rate it takes'} under Settings, Project.`
+  }
+  if (!out.rate || out.rate === rate) return good(`Windows runs this device at the project's rate, ${rate} Hz.`) + ' Windows still mixes it with other programs.'
+  return warn(`In Shared mode Windows converts the project's ${rate} Hz to the device's ${out.rate} Hz.`) + ' Not bit-exact. ASIO or Exclusive avoid it.'
 }
 
 /** The Audio page of Settings. */
@@ -90,20 +136,15 @@ export function audioHtml(): string {
   const out = chosenOutput(d)
   const driver = d.choice.driver ?? 'auto'
   const rate = d.project_rate
-  let verdict = ''
-  if (out) {
-    const direct = out.exclusive?.formats.some((f) => f.sample_rates.includes(rate))
-    if (out.rate && out.rate !== rate) {
-      verdict = `<span style="color:var(--solo)">Windows runs this device at ${out.rate} Hz, the project is ${rate} Hz.</span> ${direct ? 'Exclusive mode plays the project rate directly; in Shared mode Windows converts it.' : 'Windows will convert the sound. To avoid that, set the device to ' + rate + ' Hz in Windows Sound settings.'}`
-    } else if (out.rate) {
-      verdict = `<span style="color:var(--ok)">Device and project both run at ${rate} Hz.</span> Nothing is converted.`
-    }
-  }
+  const verdict = rateVerdict(d, out, driver)
+  // With ASIO the list is the ASIO drivers: those are the names ASIO knows.
+  const asioList = driver === 'asio' && d.asio.length > 0
+  const options = asioList
+    ? d.asio.map((a) => `<option value="${esc(a)}" ${chosenAsio(d) === a ? 'selected' : ''}>${esc(a)}</option>`).join('')
+    : `<option value="default" ${d.choice.device ? '' : 'selected'}>System default${d.outputs.find((o) => o.default) ? ` (${esc(d.outputs.find((o) => o.default)!.name)})` : ''}</option>` +
+      d.outputs.map((o) => `<option value="${esc(o.name)}" ${d.choice.device && out === o ? 'selected' : ''}>${esc(o.name)}</option>`).join('')
   return `<h3>Output</h3>
-    <label class="row"><span>Device</span><select class="input" data-out>
-      <option value="default" ${d.choice.device ? '' : 'selected'}>System default${d.outputs.find((o) => o.default) ? ` (${esc(d.outputs.find((o) => o.default)!.name)})` : ''}</option>
-      ${d.outputs.map((o) => `<option value="${esc(o.name)}" ${d.choice.device && out === o ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}
-    </select></label>
+    <label class="row"><span>${asioList ? 'ASIO driver' : 'Device'}</span><select class="input" data-out>${options}</select></label>
     <div class="row"><span>Driver</span><div class="seg" data-drv>${DRIVERS.map(([v, label]) => `<button data-v="${v}" class="${v === driver ? 'on' : ''}" ${v === 'asio' && d.probed && !d.asio.length ? 'disabled title="No ASIO driver is installed"' : ''}>${label}</button>`).join('')}</div></div>
     <div class="row"><span></span><div class="sub">${DRIVERS.find(([v]) => v === driver)![2]}</div></div>
     <div class="row"><span>Buffer</span><div class="seg" data-buf>${BUFFERS.map((b) => `<button data-v="${b}" class="${(d.choice.buffer ?? 0) === b ? 'on' : ''}">${b || "Driver's choice"}</button>`).join('')}</div></div>
@@ -113,6 +154,8 @@ export function audioHtml(): string {
     <h3>Outputs connected now</h3><div class="list">${d.outputs.map(row).join('') || '<div><span class="grow">None. Plug one in: it appears here by itself.</span></div>'}</div>
     <h3>Inputs connected now</h3><div class="list">${d.inputs.map(row).join('') || '<div><span class="grow">None.</span></div>'}</div>
     <div class="sub">Recording is not built yet. Inputs are listed so you can see that they are detected.</div>
+    <h3>MIDI inputs connected now</h3><div class="list">${d.midi_error ? `<div><span class="grow">${warn('Could not be listed')}<br><small>${esc(d.midi_error)}</small></span></div>` : d.midi.map((m) => `<div><span class="grow">${esc(m)}</span></div>`).join('') || '<div><span class="grow">None. Plug a keyboard in: it appears here by itself.</span></div>'}</div>
+    <div class="sub">Playing instruments from a keyboard comes with plugin hosting, which is not built yet. Keyboards are listed so you can see that they are detected.</div>
     <h3>ASIO drivers</h3><div class="sub">${d.probed ? (d.asio.length ? esc(d.asio.join(', ')) : 'None installed on this computer.') : 'Checking…'}</div>
     <div class="sub">Crucible cannot see a program that holds a device through ASIO: ASIO goes around Windows.</div>`
 }

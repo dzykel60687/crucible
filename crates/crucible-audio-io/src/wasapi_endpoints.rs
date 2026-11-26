@@ -113,19 +113,25 @@ impl Watch {
             .name("crucible device watch".into())
             .spawn(move || {
                 let _ = wasapi::initialize_mta();
-                let bump = move || {
+                // Each report from Windows is counted, and written down as it arrives while the
+                // log records everything. Names are looked up later, by whoever lists the devices:
+                // a notification callback should do as little as it can.
+                let bump = move |what: &str, id: &str| {
                     counter.fetch_add(1, Ordering::Relaxed);
+                    if crucible_diagnostics::everything() {
+                        crucible_diagnostics::event("AUDIO", format!("Windows reports: {what} {id}"));
+                    }
                 };
                 let mut callbacks = DeviceEventCallbacks::new();
                 let b = bump.clone();
-                callbacks.set_device_added_callback(move |_| b());
+                callbacks.set_device_added_callback(move |id| b("device added", &id));
                 let b = bump.clone();
-                callbacks.set_device_removed_callback(move |_| b());
+                callbacks.set_device_removed_callback(move |id| b("device removed", &id));
                 let b = bump.clone();
-                callbacks.set_device_state_callback(move |_, _| b());
+                callbacks.set_device_state_callback(move |id, state| b(&format!("device is now {state:?}"), &id));
                 let b = bump.clone();
-                callbacks.set_default_device_callback(move |_, _, _| b());
-                callbacks.set_property_value_callback(move |_, _| bump());
+                callbacks.set_default_device_callback(move |direction, role, id| b(&format!("default {direction:?} device for {role:?} is now"), id.as_deref().unwrap_or("none")));
+                callbacks.set_property_value_callback(move |id, _| bump("a setting changed on device", &id));
                 let registration = DeviceEnumerator::new().and_then(|e| e.register_notification_callback(callbacks));
                 if let Err(e) = &registration {
                     crucible_diagnostics::info(format!("device changes will not be noticed: {e}"));

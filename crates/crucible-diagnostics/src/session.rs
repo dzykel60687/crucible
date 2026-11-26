@@ -89,6 +89,9 @@ pub fn start(program: &str, label: &str) -> Option<PathBuf> {
     if log::set_logger(&BRIDGE).is_ok() {
         log::set_max_level(log::LevelFilter::Info);
     }
+    if everything() {
+        set_verbose(true);
+    }
     if let Some(e) = open_error {
         warn(Code::LogUnavailable, e);
     }
@@ -136,6 +139,17 @@ pub fn event(tag: &str, msg: impl AsRef<str>) {
 pub fn clock_before(seconds: f64) -> String {
     let then = chrono::Local::now() - chrono::Duration::milliseconds((seconds.max(0.0) * 1000.0) as i64);
     then.format("%H:%M:%S%.3f").to_string()
+}
+
+/// Whether the log records everything it can (D-037, Dzyan 2026-11-25: "log everything while the
+/// program runs ... this is while we're testing it"). True until Crucible is released for real;
+/// set the environment variable `CRUCIBLE_LOG=normal` for the quieter log a released version
+/// would write. In this mode a line is written every second whatever happens, commands are
+/// logged with their whole answer, libraries log their detail, and the window reports every
+/// click, key, scroll and popup as it happens.
+pub fn everything() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("CRUCIBLE_LOG").map(|v| !v.eq_ignore_ascii_case("normal")).unwrap_or(true))
 }
 
 /// Which commit this program was built from, e.g. `commit 62b5c38cd830 of 2026-11-23`.
@@ -289,6 +303,7 @@ fn write_header(program: &str, label: &str, path: Option<&Path>) {
         if cfg!(debug_assertions) { "debug build" } else { "release build" }
     ));
     h.push(format!("source   : {}", source()));
+    h.push(format!("logging  : {}", if everything() { "everything (test builds; set CRUCIBLE_LOG=normal for less)" } else { "normal" }));
     if let Some(exe) = &exe {
         let meta = std::fs::metadata(exe).ok();
         let size = meta.as_ref().map(|m| format!("{:.1} MB", m.len() as f64 / 1_048_576.0)).unwrap_or_else(|| "?".into());
@@ -385,6 +400,12 @@ impl log::Log for Bridge {
             return;
         }
         if !self.enabled(r.metadata()) {
+            return;
+        }
+        // Detail is kept from the plugin host, whose numbered loading steps show how far a
+        // crashing plugin got. Other libraries' detail repeats what Crucible's own lines say,
+        // thousands of times (the audio library's format checks): their warnings and errors stay.
+        if r.level() > log::Level::Info && !r.target().starts_with("vst3_host") {
             return;
         }
         let level = match r.level() {

@@ -3,21 +3,31 @@
 //! Rules from `docs/04-audio-quality.md` this file keeps:
 //! - **Unity is exact.** 0 dB and centre pan multiply by exactly 1.0, so a lone clip at unity
 //!   exports the same samples it imported (the null test).
-//! - **No silent resampling.** A file at another sample rate is refused with E5017.
+//! - **No silent resampling.** A file at another sample rate is refused with E5017 unless the
+//!   person agrees to convert it (`--convert`; the window asks). A converted clip says so.
 //! - **No hidden processing.** Dither only when the user exports 16-bit with it on (the default
 //!   there, shown in the reply); no limiter, no normalising. Overs are clipped in fixed-point files
 //!   and reported (W5020), never squashed.
 //! - **One render path.** `render` mixes one block and gets each clip's samples through a
 //!   callback: from files during export, from a disk thread's buffers during playback (M2).
 //!
-//! Memory: files are streamed in blocks, never loaded whole. A 10-minute stereo file would be
-//! 230 MB as floats; a 20-track song several gigabytes.
+//! Where the sound comes from while mixing (2026-11-25, D-039):
+//! - A WAV at the project's rate is streamed from disk in blocks, never loaded whole.
+//! - Anything else (MP3, FLAC, or a file at another rate) is decoded, and converted to the
+//!   project's rate if needed, once, into memory (`Sources`), and played from there. The file in
+//!   the project folder stays exactly as it was imported. Memory: about 23 MB per stereo minute
+//!   at 48 kHz, four times that at 192 kHz.
+//!
+//! Conversion: rubato's FFT resampler, in 64-bit floating point, one channel at a time. The
+//! rates Crucible offers all have exact ratios, which is what that resampler is made for.
 //!
 //! Pan law (D-030, proposed): balance. Centre passes both channels unchanged; turning toward one
 //! side fades the other with a cosine, reaching silence at the hard side. Nothing is boosted.
 //!
-//! Imported files are copied into the project's `audio` folder, so a project folder is
-//! self-contained and opens the same on every machine. Placing a file on a track (`clip.place`)
+//! Imported files are copied, byte for byte and in their own format, into the project's `audio`
+//! folder, so a project folder is self-contained and opens the same on every machine. Before
+//! 2026-11-25 MP3 and FLAC files were decoded into 32-bit float WAVs there: five to ten times
+//! their size, and slow to write on a slow drive. Placing a file on a track (`clip.place`)
 //! is an ordinary journaled edit that names the copy, so crash recovery works.
 //!
 //! Portability: std file I/O, the pure-Rust `hound` (WAV) and `symphonia` (MP3, FLAC). No
@@ -42,8 +52,8 @@ const BLOCK: usize = 4096;
 pub(crate) static SPECS: &[Spec<Engine>] = &[
     Spec {
         name: "audio.import",
-        args: &[req("file", Kind::Text, "path to a WAV, MP3 or FLAC file")],
-        help: "Bring a file into the project's audio folder: WAV copied unchanged, MP3 and FLAC decoded once to float WAV. Then clip.place.",
+        args: &[req("file", Kind::Text, "path to a WAV, MP3 or FLAC file"), opt("convert", Kind::Bool, "agree to convert it to the project's rate if it has another one")],
+        help: "Bring a file into the project's audio folder, copied unchanged in its own format (WAV, MP3, FLAC). Then clip.place.",
         effect: Effect::File,
         run: audio_import,
     },
@@ -54,6 +64,7 @@ pub(crate) static SPECS: &[Spec<Engine>] = &[
             req("at", Kind::Number, "position in beats from the song start"),
             req("source", Kind::Text, "file name in the project's audio folder, as audio.import reported it"),
             opt("name", Kind::Text, "clip name (default: the file name)"),
+            opt("convert", Kind::Bool, "agree to convert it to the project's rate if it has another one"),
         ],
         help: "Put an imported audio file on an audio track as a new clip, full length.",
         effect: Effect::Edit,
@@ -126,6 +137,12 @@ pub(crate) fn read_ir(path: &Path) -> Result<(Vec<Vec<f32>>, u32), DawError> {
     if i.frames as f64 / f64::from(i.rate) > 30.0 {
         return Err(DawError::new(Code::EffectRefused, format!("{}: {:.0} s is too long for an impulse response (30 s at most)", path.display(), i.frames as f64 / f64::from(i.rate))));
     }
+    read_wav(path)
+}
+
+/// Every channel of a WAV file, as floats, and its rate.
+fn read_wav(path: &Path) -> Result<(Vec<Vec<f32>>, u32), DawError> {
+    let i = info(path)?;
     let mut r = hound::WavReader::open(path).map_err(|e| unreadable(path, e))?;
     let s = r.spec();
     let ch = usize::from(s.channels);
@@ -147,7 +164,7 @@ pub(crate) fn read_ir(path: &Path) -> Result<(Vec<Vec<f32>>, u32), DawError> {
 /// One open WAV file, read front to back as a clip plays. Seeks only when asked for another
 /// position. Integer samples are divided by a power of two, so 16 and 24-bit values come back
 /// exactly when written out again at the same depth.
-pub(crate) struct Reader {
+pub(crate) struct WavStream {
     r: hound::WavReader<BufReader<File>>,
     path: PathBuf,
     stereo: bool,
@@ -156,8 +173,8 @@ pub(crate) struct Reader {
     pos: u64,
 }
 
-impl Reader {
-    pub(crate) fn open(path: &Path) -> Result<Reader, DawError> {
+impl WavStream {
+    pub(crate) fn open(path: &Path) -> Result<WavStream, DawError> {
         if !path.is_file() {
             return Err(DawError::new(Code::AudioMissing, path.display().to_string()));
         }
@@ -168,7 +185,7 @@ impl Reader {
             return Err(unreadable(path, format!("{} channels: an impulse response for IR Reverb, not a clip", s.channels)));
         }
         let scale = (s.sample_format == hound::SampleFormat::Int).then(|| 1.0 / (1u64 << (s.bits_per_sample - 1)) as f32);
-        Ok(Reader { r, path: path.to_path_buf(), stereo: s.channels == 2, scale, pos: 0 })
+        Ok(WavStream { r, path: path.to_path_buf(), stereo: s.channels == 2, scale, pos: 0 })
     }
 
     /// Frames starting at `from` into `l` and `r`; a mono file fills both. Past the end of the
@@ -192,6 +209,194 @@ impl Reader {
     }
 }
 
+/// Audio held in memory at the project's rate, shared by every clip that plays it.
+pub(crate) struct Decoded {
+    /// The file's name in the audio folder, for the log.
+    pub name: String,
+    /// One buffer per channel (one or two), at the project's rate.
+    pub ch: Vec<Vec<f32>>,
+    /// What the file itself is: its rate, its length in its own frames, its format.
+    pub file_rate: u32,
+    pub file_frames: u64,
+    pub kind: String,
+}
+
+impl Decoded {
+    pub(crate) fn frames(&self) -> u64 {
+        self.ch[0].len() as u64
+    }
+    pub(crate) fn megabytes(&self) -> f64 {
+        (self.ch.len() * self.ch[0].len() * 4) as f64 / 1_048_576.0
+    }
+}
+
+/// Where a clip's sound comes from while mixing.
+#[derive(Clone)]
+pub(crate) enum Src {
+    /// A WAV at the project's rate, streamed from disk.
+    File(PathBuf),
+    /// Decoded or converted into memory.
+    Memory(Arc<Decoded>),
+}
+
+impl Src {
+    pub(crate) fn name(&self) -> String {
+        match self {
+            Src::File(p) => p.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()),
+            Src::Memory(d) => format!("{} (in memory)", d.name),
+        }
+    }
+}
+
+/// Reads a clip's sound: from a WAV on disk, or from memory.
+pub(crate) enum Reader {
+    Wav(WavStream),
+    Memory(Arc<Decoded>),
+}
+
+impl Reader {
+    pub(crate) fn open(src: &Src) -> Result<Reader, DawError> {
+        Ok(match src {
+            Src::File(p) => Reader::Wav(WavStream::open(p)?),
+            Src::Memory(d) => Reader::Memory(d.clone()),
+        })
+    }
+
+    /// Frames starting at `from` into `l` and `r`; mono fills both; past the end, silence.
+    pub(crate) fn read(&mut self, from: u64, l: &mut [f32], r: &mut [f32]) -> Result<(), DawError> {
+        match self {
+            Reader::Wav(w) => w.read(from, l, r),
+            Reader::Memory(d) => {
+                let (a, b) = (&d.ch[0], d.ch.get(1).unwrap_or(&d.ch[0]));
+                let start = (from as usize).min(a.len());
+                let n = l.len().min(a.len() - start);
+                l[..n].copy_from_slice(&a[start..start + n]);
+                r[..n].copy_from_slice(&b[start..start + n]);
+                l[n..].fill(0.0);
+                r[n..].fill(0.0);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The frames of a WAV at `rate` with one or two channels: one that plays straight from disk.
+/// `None` for anything else.
+pub(crate) fn plain_wav(path: &Path, rate: u32) -> Option<u64> {
+    let r = hound::WavReader::open(path).ok()?;
+    let s = r.spec();
+    (s.sample_rate == rate && s.channels <= 2 && check_spec(path, s).is_ok()).then(|| u64::from(r.duration()))
+}
+
+/// Every channel of a WAV, MP3 or FLAC file, its rate, and its format in words.
+fn load_whole(path: &Path) -> Result<(Vec<Vec<f32>>, u32, String), DawError> {
+    if !path.is_file() {
+        return Err(DawError::new(Code::AudioMissing, path.display().to_string()));
+    }
+    let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+    if ext == "wav" || ext == "wave" {
+        let i = info(path)?;
+        if i.channels > 2 {
+            return Err(unreadable(path, format!("{} channels: an impulse response for IR Reverb, not a clip", i.channels)));
+        }
+        let (ch, rate) = read_wav(path)?;
+        Ok((ch, rate, format!("{} WAV", i.kind)))
+    } else {
+        let (ch, rate) = decode_file(path)?;
+        Ok((ch, rate, ext.to_uppercase()))
+    }
+}
+
+/// Convert one channel from `from` Hz to `to` Hz: rubato's FFT resampler in 64-bit floating
+/// point, a chunk at a time, its start-up delay trimmed, its length the exact ratio rounded up.
+fn convert_channel(x: &[f32], from: u32, to: u32) -> Result<Vec<f32>, DawError> {
+    use rubato::audioadapter_buffers::direct::SequentialSlice;
+    use rubato::{Fft, FixedSync, Indexing, Resampler};
+    let fail = |e: String| DawError::new(Code::ConvertFailed, format!("{from} Hz to {to} Hz: {e}"));
+    let mut rs = Fft::<f64>::new(from as usize, to as usize, 4096, 1, FixedSync::Input).map_err(|e| fail(e.to_string()))?;
+    let expected = (x.len() as f64 * f64::from(to) / f64::from(from)).ceil() as usize;
+    let mut skip = rs.output_delay();
+    let (mut inbuf, mut outbuf) = (vec![0.0f64; rs.input_frames_max()], vec![0.0f64; rs.output_frames_max()]);
+    let mut out = Vec::with_capacity(expected);
+    let mut pos = 0;
+    while out.len() < expected {
+        let need = rs.input_frames_next();
+        let n = need.min(x.len() - pos);
+        for (d, s) in inbuf[..n].iter_mut().zip(&x[pos..pos + n]) {
+            *d = f64::from(*s);
+        }
+        pos += n;
+        let input = SequentialSlice::new(&inbuf[..need], 1, need).map_err(|e| fail(e.to_string()))?;
+        let cap = outbuf.len();
+        let mut output = SequentialSlice::new_mut(&mut outbuf[..], 1, cap).map_err(|e| fail(e.to_string()))?;
+        let idx = Indexing { partial_len: (n < need).then_some(n), ..Default::default() };
+        let (_, made) = rs.process_into_buffer(&input, &mut output, Some(&idx)).map_err(|e| fail(e.to_string()))?;
+        let dropped = skip.min(made);
+        skip -= dropped;
+        out.extend(outbuf[dropped..made].iter().take(expected - out.len()).map(|v| *v as f32));
+    }
+    Ok(out)
+}
+
+/// File and rate to the sound held for them.
+type Held_ = std::collections::HashMap<(PathBuf, u32), Arc<Decoded>>;
+
+/// Sounds held in memory, by file and rate. Shared between the engine and the mixers it builds;
+/// kept until another project is opened, so undoing a removed clip does not decode it again.
+#[derive(Clone, Default)]
+pub(crate) struct Sources(Arc<std::sync::Mutex<Held_>>);
+
+impl Sources {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Held_> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The file at `path`, at `rate`, loading (decoding, converting) it first if needed.
+    pub(crate) fn get(&self, path: &Path, rate: u32) -> Result<Arc<Decoded>, DawError> {
+        if let Some(d) = self.lock().get(&(path.to_path_buf(), rate)) {
+            return Ok(d.clone());
+        }
+        let (ch, file_rate, kind) = load_whole(path)?;
+        self.hold(path, rate, ch, file_rate, kind)
+    }
+
+    /// Hold sound already read from `path` (at `file_rate`), converting it to `rate` if needed.
+    pub(crate) fn hold(&self, path: &Path, rate: u32, ch: Vec<Vec<f32>>, file_rate: u32, kind: String) -> Result<Arc<Decoded>, DawError> {
+        let t0 = std::time::Instant::now();
+        let file_frames = ch.first().map_or(0, |c| c.len() as u64);
+        if file_frames == 0 {
+            return Err(unreadable(path, "no audio in the file"));
+        }
+        let ch = if file_rate == rate { ch } else { ch.iter().map(|c| convert_channel(c, file_rate, rate)).collect::<Result<Vec<_>, _>>()? };
+        let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        let d = Arc::new(Decoded { name, ch, file_rate, file_frames, kind });
+        diag::event(
+            "AUDIO",
+            format!(
+                "into memory: {} ({}, {} Hz{}, {:.1} s) | {:.0} MB | {:.0} ms",
+                d.name,
+                d.kind,
+                file_rate,
+                if file_rate == rate { String::new() } else { format!(", converted to {rate} Hz") },
+                file_frames as f64 / f64::from(file_rate),
+                d.megabytes(),
+                t0.elapsed().as_secs_f64() * 1000.0
+            ),
+        );
+        self.lock().insert((path.to_path_buf(), rate), d.clone());
+        Ok(d)
+    }
+
+    pub(crate) fn clear(&self) {
+        self.lock().clear();
+    }
+
+    /// Memory held, in MB.
+    pub(crate) fn megabytes(&self) -> f64 {
+        self.lock().values().map(|d| d.megabytes()).sum()
+    }
+}
+
 /// Fill `l` and `r` from interleaved samples. Returns the frames read before the file ended.
 fn pull<S>(mut it: impl Iterator<Item = hound::Result<S>>, stereo: bool, l: &mut [f32], r: &mut [f32], f: impl Fn(S) -> f32) -> hound::Result<usize> {
     for k in 0..l.len() {
@@ -204,9 +409,9 @@ fn pull<S>(mut it: impl Iterator<Item = hound::Result<S>>, stereo: bool, l: &mut
     Ok(l.len())
 }
 
-/// Decode an MP3 or FLAC file into a 32-bit float WAV at `out`, streaming. Returns its rate,
-/// channels and frames. A damaged frame is skipped, as players do.
-fn decode_to_wav(path: &Path, out: &Path) -> Result<(u32, u16, u64), DawError> {
+/// Decode a whole MP3 or FLAC file: one buffer per channel, and its rate. A damaged frame is
+/// skipped, as players do.
+fn decode_file(path: &Path) -> Result<(Vec<Vec<f32>>, u32), DawError> {
     use symphonia::core::codecs::audio::AudioDecoderOptions;
     use symphonia::core::errors::Error;
     use symphonia::core::formats::probe::Hint;
@@ -229,9 +434,7 @@ fn decode_to_wav(path: &Path, out: &Path) -> Result<(u32, u16, u64), DawError> {
         (t.id, p.clone())
     };
     let mut dec = symphonia::default::get_codecs().make_audio_decoder(&params, &AudioDecoderOptions::default()).map_err(|e| unreadable(path, e))?;
-    let mut w: Option<(hound::WavWriter<std::io::BufWriter<File>>, u32, u16)> = None;
-    let (mut buf, mut samples) = (Vec::<f32>::new(), 0u64);
-    let write_err = |e: hound::Error| unreadable(out, e);
+    let (mut ch, mut rate, mut buf) = (Vec::<Vec<f32>>::new(), 0u32, Vec::<f32>::new());
     loop {
         let packet = match format.next_packet() {
             Ok(Some(p)) => p,
@@ -246,25 +449,25 @@ fn decode_to_wav(path: &Path, out: &Path) -> Result<(u32, u16, u64), DawError> {
             Err(Error::DecodeError(_)) => continue,
             Err(e) => return Err(unreadable(path, e)),
         };
-        if w.is_none() {
-            let n = b.spec().channels().count() as u16;
+        if ch.is_empty() {
+            let n = b.spec().channels().count();
             if !(1..=2).contains(&n) {
                 return Err(unreadable(path, format!("{n} channels; Crucible reads mono and stereo files")));
             }
-            let spec = hound::WavSpec { channels: n, sample_rate: b.spec().rate(), bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
-            w = Some((hound::WavWriter::create(out, spec).map_err(write_err)?, b.spec().rate(), n));
+            rate = b.spec().rate();
+            ch = vec![Vec::new(); n];
         }
         buf.resize(b.samples_interleaved(), 0.0);
         b.copy_to_slice_interleaved(&mut buf);
-        let (writer, _, _) = w.as_mut().expect("created above");
-        for v in &buf {
-            writer.write_sample(*v).map_err(write_err)?;
+        let n = ch.len();
+        for (k, v) in buf.iter().enumerate() {
+            ch[k % n].push(*v);
         }
-        samples += buf.len() as u64;
     }
-    let Some((writer, rate, ch)) = w else { return Err(unreadable(path, "no audio in the file")) };
-    writer.finalize().map_err(write_err)?;
-    Ok((rate, ch, samples / u64::from(ch)))
+    if ch.is_empty() || ch[0].is_empty() {
+        return Err(unreadable(path, "no audio in the file"));
+    }
+    Ok((ch, rate))
 }
 
 fn audio_dir(e: &Engine) -> Result<PathBuf, DawError> {
@@ -314,6 +517,14 @@ fn free_name(dir: &Path, wanted: &str, file: &Path) -> (String, bool) {
 
 // ---------------------------------------------------------------- commands
 
+/// E5017 for a file at another rate, saying what can be done about it.
+fn rate_refused(what: &str, file_rate: u32, rate: u32, seconds: f64) -> DawError {
+    DawError::new(
+        Code::SampleRateMismatch,
+        format!("{what} is {file_rate} Hz, {seconds:.1} s long; the project is {rate} Hz. Add --convert to convert it to {rate} Hz while it plays (the file itself is kept as it is), or set the project to {file_rate} Hz with project.rate"),
+    )
+}
+
 fn audio_import(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let src = PathBuf::from(a.need_text("file")?);
     let dir = audio_dir(e)?;
@@ -322,51 +533,68 @@ fn audio_import(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     }
     let ext = src.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
     let stem = src.file_stem().and_then(|n| n.to_str()).unwrap_or("audio").to_string();
+    let (rate, convert) = (e.project.sample_rate, a.flag("convert") == Some(true));
     std::fs::create_dir_all(&dir).map_err(|err| unreadable(&dir, err))?;
-    let mismatch = |rate: u32| {
-        DawError::new(Code::SampleRateMismatch, format!("{} is {rate} Hz; the project is {} Hz", src.display(), e.project.sample_rate))
-    };
-    // WAV is copied byte for byte. Anything else (MP3, FLAC) is decoded once, here, into a
-    // 32-bit float WAV, so the mix only ever reads WAV and nothing is decoded twice. Either way
-    // the new file is written under a temporary name first, so a crash never leaves a half file
-    // under the real one.
-    let tmp = dir.join(format!("{stem}.import.part"));
-    let (wanted, i) = if ext == "wav" || ext == "wave" {
+    // What is in the file. A WAV says so in its header; MP3 and FLAC are decoded now, which is
+    // needed anyway for the waveform and for playing.
+    let wav = ext == "wav" || ext == "wave";
+    let (file_rate, channels, mut raw) = if wav {
         let i = info(&src)?;
-        if i.rate != e.project.sample_rate {
-            return Err(mismatch(i.rate));
-        }
-        (format!("{stem}.{ext}"), i)
+        (i.rate, i.channels, None)
     } else {
-        let decoded = decode_to_wav(&src, &tmp);
-        let (rate, channels, frames) = decoded.inspect_err(|_| { let _ = std::fs::remove_file(&tmp); })?;
-        if rate != e.project.sample_rate {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(mismatch(rate));
-        }
-        (format!("{stem}.wav"), Info { frames, rate, channels, kind: format!("{} decoded to 32-bit float", ext.to_uppercase()) })
+        let (ch, r) = decode_file(&src)?;
+        (r, ch.len() as u16, Some(ch))
     };
-    let content = if tmp.exists() { tmp.clone() } else { src.clone() };
-    let (name, existed) = free_name(&dir, &wanted, &content);
-    if existed {
-        let _ = std::fs::remove_file(&tmp);
-    } else {
-        if !tmp.exists() {
-            std::fs::copy(&src, &tmp).map_err(|err| unreadable(&tmp, err))?;
-        }
-        std::fs::rename(&tmp, dir.join(&name)).map_err(|err| unreadable(&dir.join(&name), err))?;
+    // A four-channel WAV is an impulse response for IR Reverb (fx.file): copied, never a clip.
+    let ir = channels > 2;
+    if file_rate != rate && !convert && !ir {
+        let frames = match &raw { Some(ch) => ch[0].len() as u64, None => info(&src)?.frames };
+        return Err(rate_refused(&src.display().to_string(), file_rate, rate, frames as f64 / f64::from(file_rate)));
     }
-    // Waveform peaks now, while the file is fresh in the disk cache, so drawing it never waits.
+    // The file itself goes into the audio folder exactly as it is, under a temporary name first,
+    // so a crash never leaves a half file under the real one.
+    let (name, existed) = free_name(&dir, &format!("{stem}.{ext}"), &src);
     let placed = dir.join(&name);
-    if i.channels <= 2
-        && let Ok(p) = cached_peaks(&placed)
-    {
-        e.peaks.insert(placed, Arc::new(p));
+    if !existed {
+        let tmp = dir.join(format!("{stem}.import.part"));
+        std::fs::copy(&src, &tmp).map_err(|err| unreadable(&tmp, err))?;
+        std::fs::rename(&tmp, &placed).map_err(|err| unreadable(&placed, err))?;
     }
-    let secs = i.frames as f64 / f64::from(i.rate);
-    let what = format!("{}, {} Hz, {}, {secs:.2} s", i.kind, i.rate, if i.channels == 1 { "mono" } else { "stereo" });
+    // A WAV at the project's rate plays from disk; anything else is held in memory.
+    let (file_frames, kind, held) = match plain_wav(&placed, rate) {
+        _ if ir => {
+            let i = info(&placed)?;
+            (i.frames, format!("{}, {} channels (an impulse response for IR Reverb)", i.kind, i.channels), None)
+        }
+        Some(frames) => {
+            if let Ok(p) = cached_peaks(&placed) {
+                e.peaks.insert(placed.clone(), Arc::new(p));
+            }
+            (frames, info(&placed)?.kind, None)
+        }
+        None => {
+            let d = match raw.take() {
+                Some(ch) => e.sources.hold(&placed, rate, ch, file_rate, ext.to_uppercase())?,
+                None => e.sources.get(&placed, rate)?,
+            };
+            e.peaks.insert(placed.clone(), Arc::new(peaks_from(&d)));
+            (d.file_frames, d.kind.clone(), Some(d))
+        }
+    };
+    let secs = file_frames as f64 / f64::from(file_rate);
+    let mut what = format!("{kind}, {file_rate} Hz, {}{secs:.2} s", match channels { 1 => "mono, ", 2 => "stereo, ", _ => "" });
+    if file_rate != rate && !ir {
+        what.push_str(&format!(", converted to {rate} Hz while it plays"));
+    }
+    if let Some(d) = &held {
+        what.push_str(&format!("; held in memory: {:.0} MB", d.megabytes()));
+    }
     let text = if existed { format!("Already in the project as '{name}' ({what})") } else { format!("Imported '{name}' ({what})") };
-    Ok(Reply::new(text, json!({ "source": name, "frames": i.frames, "rate": i.rate, "channels": i.channels, "format": i.kind, "seconds": secs })))
+    Ok(Reply::new(
+        text,
+        json!({ "source": name, "frames": file_frames, "rate": file_rate, "channels": channels, "format": kind, "seconds": secs,
+                "converted": file_rate != rate && !ir, "memory_mb": held.map(|d| d.megabytes()) }),
+    ))
 }
 
 fn clip_place(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
@@ -380,15 +608,32 @@ fn clip_place(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     if source.contains(['/', '\\']) || source.starts_with('.') {
         return Err(DawError::new(Code::BadArgument, format!("'{source}' should be a file name in the audio folder, as audio.import reported it")));
     }
-    let i = info(&audio_dir(e)?.join(&source))?;
-    if i.rate != e.project.sample_rate {
-        return Err(DawError::new(Code::SampleRateMismatch, format!("{source} is {} Hz; the project is {} Hz", i.rate, e.project.sample_rate)));
+    let path = audio_dir(e)?.join(&source);
+    let rate = e.project.sample_rate;
+    let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+    if ext == "wav" || ext == "wave" {
+        let i = info(&path)?;
+        if i.channels > 2 {
+            return Err(DawError::new(Code::ClipEditRefused, format!("{source} has {} channels: it is an impulse response for IR Reverb (fx.file), not a clip", i.channels)));
+        }
+        if i.rate != rate && a.flag("convert") != Some(true) {
+            return Err(rate_refused(&source, i.rate, rate, i.frames as f64 / f64::from(i.rate)));
+        }
     }
-    if i.channels > 2 {
-        return Err(DawError::new(Code::ClipEditRefused, format!("{source} has {} channels: it is an impulse response for IR Reverb (fx.file), not a clip", i.channels)));
-    }
+    // Its length at the project's rate, and what the file itself is.
+    let (at_rate, file_frames, file_rate) = match plain_wav(&path, rate) {
+        Some(n) => (n, n, rate),
+        None => {
+            let d = e.sources.get(&path, rate)?;
+            if d.file_rate != rate && a.flag("convert") != Some(true) {
+                return Err(rate_refused(&source, d.file_rate, rate, d.file_frames as f64 / f64::from(d.file_rate)));
+            }
+            (d.frames(), d.file_frames, d.file_rate)
+        }
+    };
+    let i = Info { frames: file_frames, rate: file_rate, channels: 2, kind: String::new() };
     let start = super::clips::ticks(a.need_number("at")?)?;
-    let source_length = (i.frames as f64 / e.project.frames_per_tick()).ceil().max(1.0) as i64;
+    let source_length = (at_rate as f64 / e.project.frames_per_tick()).ceil().max(1.0) as i64;
     let name = match a.text("name") {
         Some(n) => clean_name(n)?,
         None => clean_name(Path::new(&source).file_stem().and_then(|s| s.to_str()).unwrap_or("Audio"))?,
@@ -407,7 +652,13 @@ fn clip_place(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let id = e.project.add_clip(clip);
     let c = &e.project.clips[e.project.clips.len() - 1];
     Ok(Reply::new(
-        format!("Placed clip #{id} '{}' at beat {} ({:.2} s)", c.name, super::clips::beats(start), i.frames as f64 / f64::from(i.rate)),
+        format!(
+            "Placed clip #{id} '{}' at beat {} ({:.2} s{})",
+            c.name,
+            super::clips::beats(start),
+            i.frames as f64 / f64::from(i.rate),
+            if i.rate == rate { String::new() } else { format!(", converted from {} Hz", i.rate) }
+        ),
         json!({ "id": id, "created": [id], "track": track, "start": super::clips::beats(start), "length": super::clips::beats(source_length) }),
     ))
 }
@@ -418,7 +669,12 @@ fn audio_peaks(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let peaks = match e.peaks.get(&path) {
         Some(p) => p.clone(),
         None => {
-            let p = Arc::new(cached_peaks(&path)?);
+            // Peaks are at the project's rate: from the disk cache for a WAV that plays from
+            // disk, from memory for anything held there.
+            let p = Arc::new(match plain_wav(&path, e.project.sample_rate) {
+                Some(_) => cached_peaks(&path)?,
+                None => peaks_from(&*e.sources.get(&path, e.project.sample_rate)?),
+            });
             e.peaks.insert(path.clone(), p.clone());
             p
         }
@@ -433,7 +689,7 @@ fn audio_peaks(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
 /// sits in the project's `cache/peaks/<name>.peaks` (02-architecture.md, "Project store"): the
 /// file's frame count (8 bytes, little-endian), then one byte per block. Delete it and it is rebuilt.
 fn cached_peaks(path: &Path) -> Result<Vec<u8>, DawError> {
-    let frames = u64::from(Reader::open(path)?.r.duration());
+    let frames = u64::from(WavStream::open(path)?.r.duration());
     let project = path.parent().and_then(Path::parent).unwrap_or(Path::new("."));
     let cache = project.join("cache").join("peaks").join(format!("{}.peaks", path.file_name().and_then(|n| n.to_str()).unwrap_or("x")));
     if let Ok(bytes) = std::fs::read(&cache)
@@ -458,7 +714,7 @@ fn cached_peaks(path: &Path) -> Result<Vec<u8>, DawError> {
 
 /// Loudest sample of each 256-frame block, over both channels, as 0-255 (linear). Streams.
 fn peaks_of(path: &Path) -> Result<Vec<u8>, DawError> {
-    let mut r = Reader::open(path)?;
+    let mut r = WavStream::open(path)?;
     let frames = u64::from(r.r.duration());
     let (mut l, mut rr) = (vec![0.0f32; FRAMES_PER_PEAK], vec![0.0f32; FRAMES_PER_PEAK]);
     let mut out = Vec::with_capacity(frames.div_ceil(FRAMES_PER_PEAK as u64) as usize);
@@ -471,6 +727,15 @@ fn peaks_of(path: &Path) -> Result<Vec<u8>, DawError> {
         pos += n as u64;
     }
     Ok(out)
+}
+
+/// The same outline, for sound held in memory.
+fn peaks_from(d: &Decoded) -> Vec<u8> {
+    let (a, b) = (&d.ch[0], d.ch.get(1).unwrap_or(&d.ch[0]));
+    a.chunks(FRAMES_PER_PEAK)
+        .zip(b.chunks(FRAMES_PER_PEAK))
+        .map(|(x, y)| (x.iter().chain(y).fold(0.0f32, |m, v| m.max(v.abs())).min(1.0) * 255.0).round() as u8)
+        .collect()
 }
 
 fn base64(bytes: &[u8]) -> String {
@@ -501,7 +766,7 @@ pub(crate) fn pan_gains(pan: f64) -> (f32, f32) {
 
 /// One audio clip, ready to mix: which file, where it plays on the timeline and how loud.
 pub(crate) struct Voice {
-    path: PathBuf,
+    src: Src,
     /// Timeline frame where the clip's first audible frame plays.
     at: u64,
     /// First frame inside the file, and how many frames play.
@@ -516,8 +781,8 @@ impl Voice {
     pub(crate) fn end(&self) -> u64 {
         self.at + self.len
     }
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
+    pub(crate) fn src(&self) -> &Src {
+        &self.src
     }
 }
 
@@ -554,11 +819,11 @@ pub(crate) struct Mixer {
 /// `held` is for playback: the effects the running mixer holds, by id, with the settings and
 /// tempo they were built from. An effect found there unchanged is not built again; a stand-in
 /// takes its place until `Mixer::inherit` swaps the running one in, sound and all.
-pub(crate) fn mixer(p: &Project, folder: Option<&Path>, block: usize, held: Option<&Held>) -> Result<Mixer, DawError> {
+pub(crate) fn mixer(p: &Project, folder: Option<&Path>, block: usize, held: Option<&Held>, sources: &Sources) -> Result<Mixer, DawError> {
     let any_solo = p.tracks.iter().any(|t| t.solo);
     let fpt = p.frames_per_tick();
     let rate = f64::from(p.sample_rate);
-    let mut checked = std::collections::HashMap::<PathBuf, u64>::new();
+    let mut checked = std::collections::HashMap::<PathBuf, (Src, u64)>::new();
     let (mut voices, mut strips) = (Vec::new(), Vec::new());
     for t in p.tracks.iter().filter(|t| !t.mute && (!any_solo || t.solo)) {
         let first = voices.len();
@@ -566,21 +831,29 @@ pub(crate) fn mixer(p: &Project, folder: Option<&Path>, block: usize, held: Opti
             let Content::Audio { source, frames, .. } = &c.content else { continue };
             let folder = folder.ok_or_else(|| DawError::new(Code::ProjectNotSaved, "the project has audio but no folder"))?;
             let path = folder.join(AUDIO_DIR).join(source);
-            let file_frames = match checked.get(&path) {
-                Some(n) => *n,
+            // A WAV at the project's rate streams from disk; anything else plays from memory,
+            // converted to the project's rate if it has another one (agreed to when it was placed).
+            let (src, file_frames) = match checked.get(&path) {
+                Some(x) => x.clone(),
                 None => {
-                    let i = info(&path)?;
-                    if i.rate != p.sample_rate {
-                        return Err(DawError::new(Code::SampleRateMismatch, format!("{} is {} Hz; the project is {} Hz", path.display(), i.rate, p.sample_rate)));
+                    if !path.is_file() {
+                        return Err(DawError::new(Code::AudioMissing, path.display().to_string()));
                     }
-                    checked.insert(path.clone(), i.frames);
-                    i.frames
+                    let x = match plain_wav(&path, p.sample_rate) {
+                        Some(n) => (Src::File(path.clone()), n.min(*frames)),
+                        None => {
+                            let d = sources.get(&path, p.sample_rate)?;
+                            let n = d.frames();
+                            (Src::Memory(d), n)
+                        }
+                    };
+                    checked.insert(path.clone(), x.clone());
+                    x
                 }
-            }
-            .min(*frames);
+            };
             let from = (c.offset as f64 * fpt).round() as u64;
             let len = ((c.length as f64 * fpt).round() as u64).min(file_frames.saturating_sub(from));
-            voices.push(Voice { path, at: (c.start as f64 * fpt).round() as u64, from, len, gain: gain(c.gain_db) });
+            voices.push(Voice { src, at: (c.start as f64 * fpt).round() as u64, from, len, gain: gain(c.gain_db) });
         }
         if voices.len() == first {
             continue; // nothing on this track makes sound yet
@@ -720,7 +993,7 @@ fn project_export(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let dither = bits == "16" && a.text("dither") != Some("off");
     let p = &e.project;
     let fpt = p.frames_per_tick();
-    let mut m = mixer(p, e.folder.as_deref(), BLOCK, None)?;
+    let mut m = mixer(p, e.folder.as_deref(), BLOCK, None, &e.sources)?;
     let start = (super::clips::ticks(a.number("start").unwrap_or(0.0))?.max(0) as f64 * fpt).round() as u64;
     let end = match a.number("end") {
         Some(b) => (super::clips::ticks(b)? as f64 * fpt).round() as u64,
@@ -747,7 +1020,7 @@ fn project_export(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let (mut left, mut right, mut sl, mut sr) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK], vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
     // One reader per clip, opened when the clip starts and closed when it ends.
     let mut readers: Vec<Option<Reader>> = m.voices.iter().map(|_| None).collect();
-    let spans: Vec<(u64, PathBuf)> = m.voices.iter().map(|v| (v.at + v.len, v.path.clone())).collect();
+    let spans: Vec<(u64, Src)> = m.voices.iter().map(|v| (v.at + v.len, v.src.clone())).collect();
     let mut noise = Xorshift(0x9E37_79B9_7F4A_7C15);
     let (mut peak, mut overs) = (0.0f32, 0u64);
     let mut pos = start;
@@ -1047,7 +1320,7 @@ mod tests {
         run(&mut e, "track.add Keys; track.pan Keys 30; track.gain Gtr -4; fx.add Gtr reverb; fx.add Keys echo").unwrap();
         import_place(&mut e, &a, "Gtr", 0.0);
         import_place(&mut e, &b, "Keys", 0.25);
-        let mut m = mixer(e.project(), Some(&dir), 512, None).unwrap();
+        let mut m = mixer(e.project(), Some(&dir), 512, None, &e.sources).unwrap();
         // The callback hands out preloaded samples, as a disk thread's buffers will.
         let data: Vec<Vec<f32>> = m.voices.iter().map(|_| noise(20_000)).collect();
         let (mut l, mut r, mut sl, mut sr) = (vec![0.0f32; 512], vec![0.0f32; 512], vec![0.0f32; 512], vec![0.0f32; 512]);
@@ -1156,5 +1429,64 @@ mod tests {
         assert_eq!(std::fs::read(&cache).unwrap().len(), 8 + 2);
         wav(&f, 48_000, 2, "32f", &[0.0; 2 * 100]);
         assert_eq!(cached_peaks(&f).unwrap(), vec![0]);
+    }
+
+    /// The converter: exact length for the ratio, pitch kept, and an error far below hearing.
+    /// A 1 kHz sine at 48 kHz converted to 192 kHz is compared with a perfect 1 kHz sine at
+    /// 192 kHz, away from the ends (where any converter rings a little).
+    #[test]
+    fn conversion_is_clean_and_exact_in_length() {
+        let sine = |rate: f64, n: usize| (0..n).map(|k| (0.5 * (2.0 * std::f64::consts::PI * 1000.0 * k as f64 / rate).sin()) as f32).collect::<Vec<f32>>();
+        let x = sine(48_000.0, 48_000);
+        let y = convert_channel(&x, 48_000, 192_000).unwrap();
+        assert_eq!(y.len(), 192_000, "one second stays one second");
+        let want = sine(192_000.0, 192_000);
+        let (mut err, mut sig) = (0.0f64, 0.0f64);
+        for k in 20_000..172_000 {
+            err += (f64::from(y[k]) - f64::from(want[k])).powi(2);
+            sig += f64::from(want[k]).powi(2);
+        }
+        let snr = 10.0 * (sig / err).log10();
+        assert!(snr > 100.0, "the converted sine is off by more than -100 dB: {snr:.1} dB");
+        let z = convert_channel(&sine(44_100.0, 44_100), 44_100, 48_000).unwrap();
+        assert_eq!(z.len(), 48_000);
+        assert_eq!(convert_channel(&x, 48_000, 48_000).unwrap().len(), 48_000, "same rate: same length");
+    }
+
+    /// A file at another rate is refused unless the person agrees; agreed, it plays converted, and
+    /// the file in the project stays exactly as it was. The project's rate can change the same way.
+    #[test]
+    fn another_rate_is_converted_only_when_agreed() {
+        let (mut e, dir, inp) = project("convert");
+        let cd = inp.join("cd.wav");
+        let tone: Vec<f32> = (0..44_100).flat_map(|k| { let v = (0.25 * (2.0 * std::f64::consts::PI * 441.0 * k as f64 / 44_100.0).sin()) as f32; [v, v] }).collect();
+        wav(&cd, 44_100, 2, "24", &tone);
+        assert_eq!(run(&mut e, &format!("audio.import \"{}\"", cd.display())).unwrap_err().code, Code::SampleRateMismatch);
+        let r = run(&mut e, &format!("audio.import \"{}\" --convert", cd.display())).unwrap();
+        assert_eq!(r.data["converted"], true);
+        assert!(r.text.contains("converted to 48000 Hz"), "{}", r.text);
+        assert_eq!(std::fs::read(dir.join("audio").join("cd.wav")).unwrap(), std::fs::read(&cd).unwrap(), "the file is kept byte for byte");
+        assert_eq!(run(&mut e, "clip.place Gtr 0 cd.wav").unwrap_err().code, Code::SampleRateMismatch, "placing asks again");
+        let placed = run(&mut e, "clip.place Gtr 0 cd.wav --convert").unwrap();
+        assert!(placed.text.contains("converted from 44100 Hz"), "{}", placed.text);
+        let out = dir.join("c.wav");
+        run(&mut e, &format!("project.export \"{}\" --bits 32f", out.display())).unwrap();
+        let s = floats(&out);
+        assert_eq!(s.len() / 2, 48_000, "one second at 48 kHz");
+        // 441 Hz: 882 sign changes a second, whatever the rate.
+        let crossings = s.chunks(2).map(|f| f[0]).collect::<Vec<_>>().windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
+        assert!((878..=886).contains(&crossings), "pitch changed: {crossings} crossings");
+        let peak = s.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!((peak - 0.25).abs() < 0.01, "level changed: peak {peak}");
+        // The project's rate: refused while files are at other rates, unless agreed.
+        assert_eq!(run(&mut e, "project.rate 96000").unwrap_err().code, Code::SampleRateMismatch);
+        assert!(run(&mut e, "project.rate 96000 --convert").unwrap().text.contains("converted"));
+        run(&mut e, &format!("project.export \"{}\" --bits 32f", out.display())).unwrap();
+        assert_eq!(floats(&out).len() / 2, 96_000, "the same second at 96 kHz");
+        // Back at the file's own rate nothing is converted: the export is the file, exactly.
+        run(&mut e, "project.rate 44100 --convert").unwrap();
+        run(&mut e, &format!("project.export \"{}\" --bits 24", out.display())).unwrap();
+        assert_eq!(ints(&out), ints(&cd), "at its own rate the file plays untouched");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

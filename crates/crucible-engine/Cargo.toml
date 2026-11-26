@@ -13,8 +13,10 @@ serde_json = { workspace = true }
 crucible-dsp = { path = "../crucible-dsp" }
 # Audio devices for playback (seam 1). The engine itself has no OS code.
 crucible-audio-io = { path = "../crucible-audio-io" }
+crucible-midi-io = { path = "../crucible-midi-io" }
 # WAV read and write for import and export. Pure Rust, Apache-2.0. Stops at 4 GB per file (T7).
 hound = "3.5"
 # MP3 and FLAC import: decoded once, at import, into a WAV in the project's audio folder.
 # Pure Rust, MPL-2.0. Only the two decoders are compiled in.
 symphonia = { version = "0.6", default-features = false, features = ["mp3", "flac"] }
+rubato = "5.1.0"

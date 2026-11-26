@@ -81,7 +81,8 @@ function logLine(kind: 'cmd' | 'ok' | 'err' | 'help', text: string) {
 }
 
 /** Run command text through the engine. Every GUI action ends up here, and appears in the console. */
-export async function run(line: string, opts: { quiet?: boolean } = {}): Promise<Reply[]> {
+/** `handles`: error codes the caller deals with itself (with a question, say): no error message. */
+export async function run(line: string, opts: { quiet?: boolean; handles?: string[] } = {}): Promise<Reply[]> {
   logLine('cmd', line)
   let replies: Reply[]
   try {
@@ -99,7 +100,7 @@ export async function run(line: string, opts: { quiet?: boolean } = {}): Promise
     else {
       logLine('err', `${r.code}: ${r.message}`)
       if (r.help) logLine('help', r.help)
-      toast('error', r.title ?? 'Command failed', r.message ?? '', r.code)
+      if (!opts.handles?.includes(r.code ?? '')) toast('error', r.title ?? 'Command failed', r.message ?? '', r.code)
     }
   }
   changed()

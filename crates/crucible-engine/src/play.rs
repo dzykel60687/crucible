@@ -21,7 +21,7 @@
 //!
 //! Portability: none of this is OS code. Devices come from `crucible-audio-io` (seam 1).
 
-use crate::audio::{self, Held, Mixer, Reader};
+use crate::audio::{self, Held, Mixer, Reader, Sources, Src};
 use crate::command::{Args, Kind, Reply, Spec, opt, req};
 use crate::{Effect, Engine};
 use crucible_audio_io as io;
@@ -115,6 +115,13 @@ struct Shared {
     ring: Ring,
     /// Samples the feeder keeps queued, at least.
     ahead: AtomicUsize,
+    /// The least the queue held when the driver came for sound, since the log last asked.
+    low: AtomicUsize,
+    /// The slowest mixing step since the log last asked.
+    worst_recent_ns: AtomicU64,
+    /// Things the feeder did, for the log (files opened and closed, mixers taken over). The
+    /// feeder never waits for this lock: a note it cannot hand over is dropped.
+    notes: Mutex<Vec<String>>,
     /// The most samples the driver has asked for in one go. Drivers do not always say their
     /// buffer size truthfully up front (shared mode and some ASIO drivers ask for more later),
     /// so the queue is sized from what they actually take: see `want`.
@@ -162,13 +169,16 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    pub(crate) fn start(p: &Project, folder: Option<&Path>, from: u64) -> Result<Session, DawError> {
-        let m = audio::mixer(p, folder, BLOCK, Some(&Held::new()))?;
+    pub(crate) fn start(p: &Project, folder: Option<&Path>, from: u64, sources: &Sources) -> Result<Session, DawError> {
+        let m = audio::mixer(p, folder, BLOCK, Some(&Held::new()), sources)?;
         let (held, end) = (m.held(p), m.end_frame());
         let sh = Arc::new(Shared {
             ring: Ring::new(1 << 17),
             ahead: AtomicUsize::new(2 * (AHEAD_SECONDS * f64::from(p.sample_rate)) as usize),
             asked: AtomicUsize::new(0),
+            low: AtomicUsize::new(usize::MAX),
+            worst_recent_ns: AtomicU64::new(0),
+            notes: Mutex::new(Vec::new()),
             skip_to: AtomicUsize::new(0),
             seek_frame: AtomicU64::new(from),
             played: AtomicU64::new(from),
@@ -208,6 +218,7 @@ impl Session {
                 sh.ring.tail.store(skip, Relaxed);
                 sh.played.store(sh.seek_frame.load(Relaxed), Relaxed);
             }
+            sh.low.fetch_min(sh.ring.fill(), Relaxed);
             let got = sh.ring.pop(buf);
             buf[got..].fill(0.0);
             if got > 0 {
@@ -229,8 +240,8 @@ impl Session {
     }
 
     /// The project changed: build its mixer here, hand it to the feeder.
-    pub(crate) fn update(&mut self, p: &Project, folder: Option<&Path>) -> Result<(), DawError> {
-        let m = audio::mixer(p, folder, BLOCK, Some(&self.held))?;
+    pub(crate) fn update(&mut self, p: &Project, folder: Option<&Path>, sources: &Sources) -> Result<(), DawError> {
+        let m = audio::mixer(p, folder, BLOCK, Some(&self.held), sources)?;
         (self.held, self.end) = (m.held(p), m.end_frame());
         let _ = self.tx.send(Msg::Mixer(Box::new(m)));
         self.wake();
@@ -269,13 +280,24 @@ impl Shared {
     fn want(&self) -> usize {
         self.ahead.load(Relaxed).max(3 * self.asked.load(Relaxed)).min(self.ring.buf.len() - BLOCK * 4)
     }
+
+    /// Something the feeder did, for the log. Only when the log records everything, and never
+    /// waited for: the feeder must not be held up by whoever is reading the notes.
+    fn note(&self, text: impl FnOnce() -> String) {
+        if diag::everything()
+            && let Ok(mut n) = self.notes.try_lock()
+        {
+            n.push(text());
+        }
+    }
 }
 
 /// The feeder thread. Owns the mixer and the open clip files.
 fn feed(mut m: Mixer, from: u64, rx: mpsc::Receiver<Msg>, sh: &Shared) {
     let _priority = io::AudioPriority::join();
     let mut pos = from;
-    let open = |m: &Mixer| -> (Vec<Option<Reader>>, Vec<(u64, PathBuf)>) { (m.voices.iter().map(|_| None).collect(), m.voices.iter().map(|v| (v.end(), v.path().to_path_buf())).collect()) };
+    sh.note(|| format!("the mixing thread started at frame {from} with {} clips", m.voices.len()));
+    let open = |m: &Mixer| -> (Vec<Option<Reader>>, Vec<(u64, Src)>) { (m.voices.iter().map(|_| None).collect(), m.voices.iter().map(|v| (v.end(), v.src().clone())).collect()) };
     let (mut readers, mut spans) = open(&m);
     let (mut l, mut r, mut sl, mut sr) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK], vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
     let mut both = vec![0.0f32; BLOCK * 2];
@@ -290,8 +312,10 @@ fn feed(mut m: Mixer, from: u64, rx: mpsc::Receiver<Msg>, sh: &Shared) {
                     (readers, spans) = open(&m);
                     sh.swapped_at.store(pos, Relaxed);
                     sh.swaps.fetch_add(1, Relaxed);
+                    sh.note(|| format!("a new mixer took over at frame {pos} ({} clips)", m.voices.len()));
                 }
                 Ok(Msg::Seek(frame)) => {
+                    sh.note(|| format!("jumped from frame {pos} to frame {frame}"));
                     pos = frame;
                     sh.seek_frame.store(frame, Relaxed);
                     sh.waiting.store(true, Relaxed);
@@ -309,6 +333,7 @@ fn feed(mut m: Mixer, from: u64, rx: mpsc::Receiver<Msg>, sh: &Shared) {
         let result = audio::render(&mut m, pos, &mut l, &mut r, (&mut sl, &mut sr), |i, at, a, b| {
             if readers[i].is_none() {
                 readers[i] = Some(Reader::open(&spans[i].1)?);
+                sh.note(|| format!("opened {}", spans[i].1.name()));
             }
             readers[i].as_mut().expect("opened above").read(at, a, b)
         });
@@ -334,6 +359,7 @@ fn feed(mut m: Mixer, from: u64, rx: mpsc::Receiver<Msg>, sh: &Shared) {
         sh.render_ns.fetch_add(ns, Relaxed);
         sh.rendered.fetch_add(BLOCK as u64, Relaxed);
         sh.worst_ns.fetch_max(ns, Relaxed);
+        sh.worst_recent_ns.fetch_max(ns, Relaxed);
         m.take_peaks(&mut peaks);
         if let Ok(mut t) = sh.tracks.try_lock() {
             for p in peaks.drain(..) {
@@ -433,14 +459,21 @@ struct Told {
     late: u64,
     /// Whether the log has been told that the driver asks for more than it reported.
     told_asked: bool,
+    /// Mixing time and frames, and late wake-ups, at the last once-a-second line.
+    second: (u64, u64, u64),
+    /// Something outside (the window's once-a-second line) asks for the numbers itself.
+    ticked: bool,
 }
 
-/// How often a health line goes into the log while playing.
-const HEALTH_EVERY: Duration = Duration::from_secs(10);
+/// How often a health line goes into the log while playing: every second while the log records
+/// everything (test builds), else every ten.
+fn health_every() -> Duration {
+    Duration::from_secs(if diag::everything() { 1 } else { 10 })
+}
 
 impl Player {
-    fn start(p: &Project, folder: Option<&Path>, from: u64, choice: &OutputChoice) -> Result<Player, DawError> {
-        let session = Session::start(p, folder, from)?;
+    fn start(p: &Project, folder: Option<&Path>, from: u64, choice: &OutputChoice, sources: &Sources) -> Result<Player, DawError> {
+        let session = Session::start(p, folder, from, sources)?;
         let req = io::OutputRequest { driver: choice.driver, device: choice.device.clone(), sample_rate: p.sample_rate, buffer_frames: choice.buffer, channels: 2 };
         diag::event("AUDIO", format!("opening the output | asked for: {}", choice.text()));
         let others = crate::devices::others_on(choice.device.as_deref());
@@ -463,7 +496,7 @@ impl Player {
         for n in &out.notes {
             diag::info(format!("playback: {n}"));
         }
-        let pl = Player { session, out, began: Instant::now(), told: Cell::new(Told { at: Instant::now(), counts: (0, 0, 0), peak: 0.0, failed: false, warned: None, late: 0, told_asked: false }) };
+        let pl = Player { session, out, began: Instant::now(), told: Cell::new(Told { at: Instant::now(), counts: (0, 0, 0), peak: 0.0, failed: false, warned: None, late: 0, told_asked: false, second: (0, 0, 0), ticked: false }) };
         let rate = f64::from(p.sample_rate);
         diag::event(
             "AUDIO",
@@ -516,6 +549,32 @@ impl Player {
         )
     }
 
+    /// How playback did since this was last asked (about a second ago): the least the queue held
+    /// when the driver came for sound, how much of a core mixing took and its slowest step, late
+    /// wake-ups, the loudest sample. For the once-a-second line; asking resets the measurements.
+    fn second(&self) -> String {
+        let mut t = self.told.get();
+        let sh = &self.session.sh;
+        let rate = f64::from(self.session.rate);
+        let (ns, frames, late) = (sh.render_ns.load(Relaxed), sh.rendered.load(Relaxed), self.out.stats().late_wakeups);
+        let (dns, dframes) = (ns.saturating_sub(t.second.0) as f64, frames.saturating_sub(t.second.1) as f64);
+        let mixing = if dframes > 0.0 { 100.0 * dns / 1e9 / (dframes / rate) } else { 0.0 };
+        let slowest = 100.0 * sh.worst_recent_ns.swap(0, Relaxed) as f64 / 1e9 / (BLOCK as f64 / rate);
+        let low = sh.low.swap(usize::MAX, Relaxed);
+        let queue = if low == usize::MAX { "no request".to_string() } else { format!("low {:.0}%", 100.0 * low as f64 / sh.want().max(1) as f64) };
+        t.peak = t.peak.max(f32::from_bits(sh.peak[0].load(Relaxed))).max(f32::from_bits(sh.peak[1].load(Relaxed)));
+        let peak = db(t.peak).map_or("silent".to_string(), |d| format!("{d:+.1} dBFS"));
+        let line = format!(
+            "at {:.1} s | queue {queue} | mixing {mixing:.1}%, slowest step {slowest:.0}% | late wake-ups +{}, dropouts {} | peak {peak}",
+            self.seconds(),
+            late.saturating_sub(t.second.2),
+            self.dropouts()
+        );
+        (t.second, t.peak, t.at) = ((ns, frames, late), 0.0, Instant::now());
+        self.told.set(t);
+        line
+    }
+
     /// Keep the log informed while playing: dropouts when they are first seen, with their cause
     /// (one line a second at most, so a machine that cannot keep up does not flood the log); a
     /// device failure once; and a health line every ten seconds. `last` writes whatever is still
@@ -559,12 +618,17 @@ impl Player {
             diag::event("AUDIO", format!("the driver asks for up to {asked} frames at a time, not the {reported} it reported; the queue now keeps {} frames ready", self.session.sh.want() / 2));
             t.told_asked = true;
         }
-        if t.at.elapsed() >= HEALTH_EVERY {
-            let peak = db(t.peak).map_or("silent".to_string(), |d| format!("{d:+.1} dBFS"));
-            diag::event("AUDIO", format!("at {:.1} s | {} | loudest since the last line {peak}", self.seconds(), self.health()));
-            (t.at, t.peak) = (Instant::now(), 0.0);
+        // What the mixing thread did since the last look.
+        if let Ok(mut notes) = self.session.sh.notes.try_lock() {
+            for n in notes.drain(..) {
+                diag::event("AUDIO", format!("mixing thread: {n}"));
+            }
         }
         self.told.set(t);
+        // The once-a-second line, unless the window writes it into its own (`alive`).
+        if !t.ticked && t.at.elapsed() >= health_every() {
+            diag::event("AUDIO", self.second());
+        }
     }
 
     /// End playback: put the totals in the log, then release the device.
@@ -615,7 +679,7 @@ pub(crate) fn after_command(e: &mut Engine, file: bool, changed: bool) {
         Some("the project's sample rate changed".to_string())
     } else {
         let t0 = Instant::now();
-        let result = pl.session.update(&e.project, e.folder.as_deref());
+        let result = pl.session.update(&e.project, e.folder.as_deref(), &e.sources);
         if result.is_ok() {
             diag::event("AUDIO", format!("edit taken over near {:.2} s | new mixer built in {:.1} ms", pl.seconds(), t0.elapsed().as_secs_f64() * 1000.0));
         }
@@ -629,6 +693,16 @@ pub(crate) fn after_command(e: &mut Engine, file: bool, changed: bool) {
         }
         e.stop_note = Some(why);
     }
+}
+
+/// For the window's once-a-second log line: how playback did in the last second, or `None` when
+/// nothing is playing. Once this has been asked, playback leaves its own once-a-second line out.
+pub(crate) fn alive(e: &Engine) -> Option<String> {
+    let pl = e.player.as_ref()?;
+    let mut t = pl.told.get();
+    t.ticked = true;
+    pl.told.set(t);
+    Some(pl.second())
 }
 
 /// This machine's output choice as data, for the device list.
@@ -668,14 +742,14 @@ fn transport_play(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     }
     e.stop_note = None;
     let choice = e.output().with(a);
-    let pl = Player::start(&e.project, e.folder.as_deref(), from.unwrap_or(0), &choice)?;
+    let pl = Player::start(&e.project, e.folder.as_deref(), from.unwrap_or(0), &choice, &e.sources)?;
     let mut text = format!("Playing through {}", pl.device_text());
     for n in &pl.out.notes {
         text.push_str(&format!("\nNote: {n}"));
     }
     if a.flag("wait") != Some(true) {
         e.player = Some(pl);
-        return Ok(Reply::new(text, json!({ "playing": true })));
+        return Ok(Reply::new(text, json!({ "playing": true })).logged());
     }
     // One-shot use: stay here until the end of the song, then stop.
     let (end, t0) = (pl.session.end, Instant::now());
@@ -701,7 +775,7 @@ fn transport_stop(e: &mut Engine, _: &Args) -> Result<Reply, DawError> {
     let (frame, summary) = (pl.session.position(), pl.summary());
     let data = json!({ "playing": false, "frame": frame, "beat": frame as f64 / fpb, "dropouts": pl.dropouts() });
     pl.finish("transport.stop")?;
-    Ok(Reply::new(format!("Stopped at beat {:.2}: {summary}", frame as f64 / fpb), data))
+    Ok(Reply::new(format!("Stopped at beat {:.2}: {summary}", frame as f64 / fpb), data).logged())
 }
 
 fn transport_seek(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
@@ -835,7 +909,7 @@ mod tests {
     fn playback_is_the_export_bit_for_bit() {
         let (mut e, dir) = song("same");
         let want = export(&mut e, &dir, "want.wav");
-        let s = Session::start(e.project(), e.folder(), 0).unwrap();
+        let s = Session::start(e.project(), e.folder(), 0, &e.sources).unwrap();
         let mut cb = s.callback();
         let got = pull(&s, &mut cb, want.len() / 2);
         if let Some(i) = (0..want.len()).find(|&i| got[i] != want[i]) {
@@ -857,11 +931,11 @@ mod tests {
     fn an_edit_during_playback_keeps_the_effects_running() {
         let (mut e, dir) = song("edit");
         let before = export(&mut e, &dir, "before.wav");
-        let mut s = Session::start(e.project(), e.folder(), 0).unwrap();
+        let mut s = Session::start(e.project(), e.folder(), 0, &e.sources).unwrap();
         let mut cb = s.callback();
         let mut got = pull(&s, &mut cb, 6_000);
         run(&mut e, "track.gain One -6; track.pan Two -40");
-        s.update(e.project(), e.folder()).unwrap();
+        s.update(e.project(), e.folder(), &e.sources).unwrap();
         let after = export(&mut e, &dir, "after.wav");
         let t0 = Instant::now();
         while s.sh.swaps.load(Relaxed) == 0 {
@@ -881,11 +955,11 @@ mod tests {
     fn an_effect_change_during_playback_keeps_its_tail() {
         let (mut e, dir) = song("tail");
         run(&mut e, "fx.set One 1 decay 3");
-        let mut s = Session::start(e.project(), e.folder(), 0).unwrap();
+        let mut s = Session::start(e.project(), e.folder(), 0, &e.sources).unwrap();
         let mut cb = s.callback();
         pull(&s, &mut cb, 31_000); // clip One (30,000 frames) has ended: only its reverb tail sounds on the left
         run(&mut e, "fx.set One 1 mix 60; track.mute Two");
-        s.update(e.project(), e.folder()).unwrap();
+        s.update(e.project(), e.folder(), &e.sources).unwrap();
         let t0 = Instant::now();
         while s.sh.swaps.load(Relaxed) == 0 {
             assert!(t0.elapsed() < Duration::from_secs(10));
@@ -896,14 +970,14 @@ mod tests {
         assert!(rms > 1e-4, "the reverb tail was cut by the change (rms {rms})");
         // An IR Reverb added while playing has no file yet: playback carries on.
         run(&mut e, "fx.add One irreverb");
-        s.update(e.project(), e.folder()).expect("a fileless IR Reverb must not stop playback");
+        s.update(e.project(), e.folder(), &e.sources).expect("a fileless IR Reverb must not stop playback");
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn a_seek_jumps_without_counting_a_dropout() {
         let (e, dir) = song("seek");
-        let s = Session::start(e.project(), e.folder(), 0).unwrap();
+        let s = Session::start(e.project(), e.folder(), 0, &e.sources).unwrap();
         let mut cb = s.callback();
         pull(&s, &mut cb, 2_000);
         s.seek(12_000);
@@ -928,7 +1002,7 @@ mod tests {
     #[test]
     fn the_queue_grows_to_fit_a_driver_that_asks_for_big_buffers() {
         let (e, dir) = song("big");
-        let s = Session::start(e.project(), e.folder(), 0).unwrap();
+        let s = Session::start(e.project(), e.folder(), 0, &e.sources).unwrap();
         let mut cb = s.callback();
         let mut buf = vec![0.0f32; 2 * 8192]; // 8,192 frames in one request: 171 ms at 48 kHz
         assert!(buf.len() > s.sh.ahead.load(Relaxed), "the test needs a request larger than the starting queue");

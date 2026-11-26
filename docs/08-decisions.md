@@ -341,14 +341,19 @@ they multiply states to test and are the clutter this project exists to avoid. A
 is per-machine UI state, not a project command; it becomes a `prefs.*` command when the settings
 file exists.
 
-## D-029. Jade green accent and the crucible-and-wave mark. *Decided by Dzyan 2026-11-21.*
+## D-029. Jade green accent and the mark (an anvil since 2026-11-25). *Decided by Dzyan 2026-11-21, 2026-11-25.*
 
 "Instead of orange let's go with green, be a little subtle and seamless about it ... make a
 musical/crucible like logo." Accent `#45c08f` (jade), a darker hover, and no orange anywhere:
 track colours are cool and muted so the accent and the red record and clip warnings stand out.
-The mark is a crucible with a sound wave cut through its body. It is drawn in `app/src/icons.ts`
-for the window and by `app/icon.py` (standard-library Python) for the app icon, from the same
-shapes. Accent swatches in Settings start with the green; the others stay as choices.
+The mark was a crucible with a sound wave cut through its body. **Since 2026-11-25 it is an
+anvil** (Dzyan: "Logo should also be an anvil instead of the vase"). The first try, side on
+with a thin wave, "looks like a T"; the second, from above with notes, did not read either. The
+third follows a reference picture he sent: the classic anvil side on (long horn, step block, face
+plate with an overhanging heel, deep waist curves, two feet and an arch), its edges drawn as thin
+lines, and a sound wave on the side. `app/icon.py` (standard-library Python) draws the app icon
+and prints the SVG for `app/src/icons.ts`, from one set of shapes. Accent swatches in Settings
+start with the green; the others stay as choices.
 
 ## D-030. Pan law: balance, centre is unity. *Proposed by Claude 2026-11-22.*
 
@@ -605,6 +610,23 @@ crash), and where Windows will not let the program write beside itself (an insta
 Files) the file goes to `%LOCALAPPDATA%\Crucible`. A per-user installer would put program and
 log together in a folder he can write; that is his to ask for.
 
+**Log everything while testing, decided by Dzyan 2026-11-25** ("Can't we just have it log everything
+while the program runs? ... this is while we're testing it"). Until Crucible is released for real
+the log records everything it can (`everything()` in `crucible-diagnostics`; `CRUCIBLE_LOG=normal`
+gives the quieter log): a line every second while the window is open (`ALIVE`: what the engine is
+doing, playback that second, memory, processor), every command's whole answer, every step of
+opening a device, every device notice from Windows, what the mixing thread does, every press, key,
+wheel burst, field focus and popup in the window, and how fast it draws. Library detail that only
+repeats this (thousands of format checks) is left out. About 1 MB per hour idle.
+
+**Where the log is, part two (2026-11-25):** "Log file should always be churning and available in
+the root directory of application." Installed under Program Files, the program cannot write its own
+folder, so the log had gone to `%LOCALAPPDATA%\Crucible`. From 0.0.3 the installer installs per
+person, in `%LOCALAPPDATA%\Programs\Crucible`, needing no administrator rights, and the log sits
+beside the program there. `app/src-tauri/wix/main.wxs` is Tauri's own WiX template with that
+change; an older per-machine install must be removed by hand first (Windows Installer will not
+upgrade across the two).
+
 Verified by machine on 2026-11-23 (`docs/test-reports/2026-11-23-devlaptop-logging-and-report.md`).
 Not verified: a real problem diagnosed from a log sent from another PC.
 
@@ -674,6 +696,80 @@ through. Every GUI bug found from now on gets a check there.
 
 Not verified: plugging a real device in and out; the "in use by" names (nothing else was playing
 on this laptop during the tests); anything on the PC where the faults were seen.
+
+## D-039. Imported files stay as they are; other formats and rates play from memory, converted only when agreed. *Asked for by Dzyan 2026-11-25.*
+
+His first session at home with a Behringer UMC202HD: importing a 4-minute song took 7 to 8 seconds,
+the project's audio folder filled with 80 to 200 MB WAV files ("a big no-no, shouldn't they be kept
+in Memory? Need to keep them highest quality"), files at another rate were refused, and he wants
+the option to convert instead.
+
+Why it was slow and big: import decoded every MP3 and FLAC into a 32-bit float WAV in the project
+folder, five to ten times the size of the file, on his project drive. Writing and reading that back
+was the 7 to 8 seconds.
+
+Now (`crucible-engine/src/audio.rs`):
+- **The file is kept as it is.** Import copies it byte for byte, in its own format, into the
+  project's `audio` folder: an MP3 stays an MP3. The project folder stays self-contained, so it
+  still opens the same on every machine (priority 5).
+- **What plays from where.** A WAV at the project's rate streams from disk, as before. Anything else
+  (MP3, FLAC, a file at another rate) is decoded, and converted to the project's rate if needed,
+  once, into memory, and plays from there. Exactly what plays is what exports.
+- **Memory:** about 23 MB per stereo minute at 48 kHz, 92 MB at 192 kHz. The import message, the
+  log and the convert question say how much.
+- **Conversion is asked for, never silent.** A file at another rate is refused (E5017) unless the
+  person agrees: the window asks "Convert to 48 kHz?" (or offers to set an empty project to the
+  file's rate); commands take `--convert`. `project.rate` does the same for audio already placed.
+  A converted clip says so in the clip editor.
+- **The converter:** rubato's FFT resampler (MIT or Apache-2.0) in 64-bit floating point, one
+  channel at a time. Tested: a converted sine is within -100 dB of a perfect one; length is the
+  exact ratio. Like IR Reverb, its last bit may differ between processors (FFT code picks
+  instructions by CPU).
+
+Pushback recorded with him: converting a 48 kHz file up to 192 kHz adds no detail and costs four
+times the memory. The reason the window pushed him toward 192 kHz was a wrong message in
+Settings (it said Windows would convert, which is not true with ASIO); fixed. Keep the project at
+the songs' rate; ASIO sets the interface to it.
+
+Not verified: his 4-minute songs on his drive (this laptop: a 16 s MP3 imports in 39 ms).
+
+## D-040. ASIO finds the interface by its other name; MIDI keyboards are listed. *Found by Dzyan 2026-11-25.*
+
+- His UMC202HD is "OUT 1-2 (BEHRINGER UMC 202HD 192k)" to Windows and has another name to its
+  ASIO driver, so choosing it in Settings and then ASIO failed with E2002. Outputs and drivers are
+  now matched by their distinctive words (`closest_name` in `crucible-audio-io`; "UMC" matches
+  "UMC ASIO Driver"); with ASIO chosen and only one ASIO driver installed, that one is used. The
+  Settings list shows ASIO drivers when ASIO is chosen. Automatic now picks ASIO whenever the chosen
+  output has an ASIO driver.
+- The Settings rate message depends on the driver: with ASIO, the driver is set to the project's
+  rate and Windows' own setting does not apply.
+- MIDI inputs (his M-Audio Axiom 61) are listed in Settings and noticed when plugged in or out.
+  Playing an instrument from them comes with plugin hosting.
+- Ctrl+C, Ctrl+X and Ctrl+A act on clips only when no text is selected, so text can be copied out
+  of the Console.
+
+## D-041. Crucible never goes online; a newer installer is the update. *Decided by Dzyan 2026-11-25.*
+
+He first asked for the installer to work as an updater too ("we will likely be updating many many
+times"). Claude built an updater inside the program that asked GitHub for new releases. Before it
+shipped he decided: "i don't want this app or installer trying to go online, needs to be self
+contained." So:
+
+- **Neither the program nor its installer makes any network connection.** The in-program updater
+  was removed before any release had it. The installer no longer downloads Microsoft's WebView2
+  runtime when it is missing (`webviewInstallMode: skip` in `tauri.conf.json`): Windows 11 and
+  up-to-date Windows 10 already carry it. On a PC without it the window cannot open; the fix is
+  Microsoft's WebView2 runtime installer, run by hand.
+- **Updating = running the newer installer.** It replaces the older version in place (Windows
+  Installer major upgrade: same upgrade code, higher version number; `MajorUpgrade` in
+  `app/src-tauri/wix/main.wxs`). Projects, settings and per-machine audio choices are kept. The
+  one exception is 0.0.2 to 0.0.3, which moves from a per-machine to a per-user install: uninstall
+  the old one once.
+- Rejected: the in-program updater (network); a "check for updates" button (network); embedding
+  WebView2's offline installer (about 130 MB more per installer, and a download when building).
+
+Not verified by machine: an in-place upgrade from one installed version to the next (Claude does
+not install on the build laptop). It is the installer's standard upgrade path, configured as above.
 
 ---
 

@@ -45,7 +45,8 @@ const PROBE_SUBCOMMAND: &str = "probe-plugin";
 /// Scripts may run scripts, but not forever.
 const MAX_SCRIPT_DEPTH: u8 = 8;
 /// How many recent logs `crucible report` includes, and how big each may be in it.
-const REPORT_MAX_BYTES: usize = 600 * 1024;
+/// Per log. A log that records everything grows by about a megabyte an hour.
+const REPORT_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();

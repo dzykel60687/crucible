@@ -48,6 +48,28 @@ pub fn process_memory_mb() -> Option<f64> {
     sys.process(pid).map(|p| p.memory() as f64 / 1_048_576.0)
 }
 
+/// This process's memory and processor use, sampled again and again (the once-a-second line in
+/// the log). Processor use is since the previous sample, as a share of one core: 100% is one
+/// core fully busy, so several busy threads read above 100%.
+pub struct ProcessWatch {
+    sys: System,
+    pid: Pid,
+}
+
+impl ProcessWatch {
+    pub fn start() -> Option<ProcessWatch> {
+        let mut w = ProcessWatch { sys: System::new().ok()?, pid: Pid::from_u32(std::process::id()) };
+        w.sample();
+        Some(w)
+    }
+
+    /// (memory in MB, processor use in percent of one core).
+    pub fn sample(&mut self) -> (f64, f64) {
+        self.sys.refresh_processes(ProcessesToUpdate::Some(&[self.pid]), false);
+        self.sys.process(self.pid).map_or((0.0, 0.0), |p| (p.memory() as f64 / 1_048_576.0, f64::from(p.cpu_usage())))
+    }
+}
+
 /// A short fingerprint of an executable file: FNV-1a 64 of its bytes.
 ///
 /// The version number does not change between test builds, so this is how a log is matched

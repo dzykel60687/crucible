@@ -115,6 +115,8 @@ pub struct Engine {
     stop_note: Option<String>,
     /// The audio devices as last listed, and the watch for changes. Started on first use.
     devices: Option<devices::Devices>,
+    /// Sound held in memory (compressed files decoded, other rates converted), by file.
+    sources: audio::Sources,
 }
 
 /// Microseconds since 1970: unique per engine, and below 2^53, so JavaScript reads it exactly.
@@ -151,6 +153,7 @@ impl Engine {
             output: None,
             stop_note: None,
             devices: None,
+            sources: audio::Sources::default(),
         }
     }
 
@@ -201,6 +204,25 @@ impl Engine {
         state
     }
 
+    /// One phrase saying what the engine is doing right now, for the once-a-second line a
+    /// front end writes into the log while it records everything (D-037).
+    pub fn alive(&self) -> String {
+        let doing = match play::alive(self) {
+            Some(playing) => format!("playing {playing}"),
+            None => format!(
+                "idle | {}: {} tracks, {} clips{}",
+                self.project.name,
+                self.project.tracks.len(),
+                self.project.clips.len(),
+                if self.is_dirty() { ", unsaved changes" } else { "" }
+            ),
+        };
+        match self.sources.megabytes() {
+            mb if mb > 0.0 => format!("{doing} | audio in memory {mb:.0} MB"),
+            _ => doing,
+        }
+    }
+
     pub fn specs() -> &'static [Spec<Engine>] {
         &ALL_SPECS
     }
@@ -222,6 +244,10 @@ impl Engine {
             }
         }
         let line = command::canonical(spec, &args);
+        // Another project: the sound held for this one is no longer needed.
+        if matches!(spec.name, "project.new" | "project.open") {
+            self.sources.clear();
+        }
         let before = (spec.effect != Effect::Read).then(|| self.project.clone());
         let reply = match (spec.run)(self, &args) {
             Ok(r) => r,
@@ -420,8 +446,8 @@ static SPECS: &[Spec<Engine>] = &[
     },
     Spec {
         name: "project.rate",
-        args: &[req("hz", Kind::Int, "44100, 48000, 88200, 96000, 176400 or 192000")],
-        help: "Set the project sample rate.",
+        args: &[req("hz", Kind::Int, "44100, 48000, 88200, 96000, 176400 or 192000"), opt("convert", Kind::Bool, "agree to convert audio at other rates while it plays")],
+        help: "Set the project sample rate. Audio at other rates is refused unless --convert is given.",
         effect: Effect::Edit,
         run: project_rate,
     },
@@ -655,12 +681,32 @@ fn project_rate(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     if !store::SAMPLE_RATES.iter().any(|r| i64::from(*r) == hz) {
         return Err(DawError::new(Code::ValueOutOfRange, format!("{hz} Hz is not one of {:?}", store::SAMPLE_RATES)));
     }
-    if let Some(c) = e.project.clips.iter().find(|c| matches!(c.content, Content::Audio { rate, frames, .. } if frames > 0 && i64::from(rate) != hz)) {
-        let Content::Audio { source, rate, .. } = &c.content else { unreachable!() };
-        return Err(DawError::new(Code::SampleRateMismatch, format!("clip #{} plays {source}, which is {rate} Hz; Crucible does not resample", c.id)));
+    // Clips whose files are at another rate are converted while they play, if agreed to. What
+    // that costs in memory is said up front: about 4 bytes per sample, two channels assumed.
+    let mut others: Vec<(&str, u32, f64)> = Vec::new();
+    for c in &e.project.clips {
+        if let Content::Audio { source, rate, frames, .. } = &c.content
+            && *frames > 0
+            && i64::from(*rate) != hz
+            && !others.iter().any(|o| o.0 == source.as_str())
+        {
+            others.push((source, *rate, *frames as f64 / f64::from(*rate)));
+        }
+    }
+    let memory_mb: f64 = others.iter().map(|o| o.2 * hz as f64 * 2.0 * 4.0 / 1_048_576.0).sum();
+    if !others.is_empty() && a.flag("convert") != Some(true) {
+        let list = others.iter().take(3).map(|o| format!("{} ({} Hz)", o.0, o.1)).collect::<Vec<_>>().join(", ");
+        return Err(DawError::new(
+            Code::SampleRateMismatch,
+            format!("{} file(s) in this project are at other rates: {list}{}. Add --convert to convert them to {hz} Hz while they play (about {memory_mb:.0} MB of memory; the files stay as they are)", others.len(), if others.len() > 3 { ", ..." } else { "" }),
+        ));
     }
     e.project.sample_rate = hz as u32;
-    Ok(Reply::new(format!("Sample rate {hz} Hz"), json!({ "sample_rate": hz })))
+    let mut text = format!("Sample rate {hz} Hz");
+    if !others.is_empty() {
+        text.push_str(&format!("; {} file(s) are converted to it while they play (about {memory_mb:.0} MB of memory)", others.len()));
+    }
+    Ok(Reply::new(text, json!({ "sample_rate": hz, "converted": others.len(), "memory_mb": memory_mb })))
 }
 
 fn master_gain(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {

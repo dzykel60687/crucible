@@ -10,7 +10,7 @@
 // same protocol is offered by WebKitGTK and WKWebView inspectors when the ports start.
 import { spawn } from 'node:child_process'
 
-const [port, freezeScript] = process.argv.slice(2)
+const [port, freezeScript, cdFile] = process.argv.slice(2)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const results = []
 const check = (name, ok, detail = '') => { results.push({ name, ok: !!ok, detail }); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`) }
@@ -238,6 +238,48 @@ for (const b of buttons) {
   if (await layerOpen()) { check(`Escape closes the popup after "${b.label.trim()}"`, false); await js(`document.getElementById('layer').replaceChildren()`) }
 }
 check(`every button responds to a click (${buttons.length} tried)`, dead.length === 0, dead.join(' | '))
+
+// 9. Ctrl+C on selected text copies the text, not clips (found by Dzyan 2026-11-25).
+await tab('console')
+await js(`(() => { const d = [...document.querySelectorAll('.console .out div')].pop(); const r = document.createRange(); r.selectNodeContents(d); getSelection().removeAllRanges(); getSelection().addRange(r) })()`)
+await reset()
+await key('c', 'KeyC', 67, 2)
+check('Ctrl+C with text selected leaves the clips alone', !(await seen()).commands.some((c) => c.startsWith('edit.copy')), (await seen()).commands.join(' | '))
+await js(`getSelection().removeAllRanges()`)
+await tab('mixer')
+
+// 10. A file at another rate: the window asks, and Convert places it (found by Dzyan 2026-11-25).
+if (cdFile) {
+  // Typed into the Console, so the window itself knows the project has a folder now.
+  const folder = `${process.env.TEMP}\\crucible-gui-test-${process.pid}`
+  await tab('console')
+  await click('.console input')
+  await send('Input.insertText', { text: `project.new --discard; track.add Gtr --kind audio; project.save "${folder}"` })
+  await key('Enter', 'Enter', 13, 0, '\r')
+  await sleep(800)
+  await tab('mixer')
+  await key('i', 'KeyI', 73, 2)
+  await sleep(300)
+  await send('Input.insertText', { text: cdFile })
+  await key('Enter', 'Enter', 13, 0, '\r')
+  await sleep(1200)
+  const asked = await js(`document.querySelector('#layer .dialog h2')?.textContent ?? ''`)
+  check('importing a file at another rate asks whether to convert', /Convert/.test(asked), asked)
+  const problems = await popupProblems()
+  check('...and that question is sound', problems.length === 0, problems.join('; '))
+  const buttons = await js(`[...document.querySelectorAll('#layer footer button')].map((b) => b.textContent)`)
+  const i = buttons.findIndex((b) => b.startsWith('Convert'))
+  if (i >= 0) await click('#layer footer button', i)
+  await sleep(1500)
+  const clips = (await project()).clips
+  check('Convert places the clip, converted', clips.length === 1 && clips[0].content.rate === 44100, `${clips.length} clips${clips[0] ? `, file at ${clips[0].content.rate} Hz` : ''}`)
+}
+
+// 11. Settings lists MIDI inputs (a keyboard must show up when plugged in).
+await click('#gear')
+await sleep(1500)
+check('Settings, Audio has a MIDI inputs list', await js(`[...document.querySelectorAll('.settings h3')].some((h) => /MIDI/.test(h.textContent))`))
+await escape()
 
 // 8. Nothing went wrong inside the page itself.
 check('no errors in the window\'s own code', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | ').slice(0, 200))

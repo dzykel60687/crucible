@@ -120,8 +120,10 @@ pub fn open_output(req: &OutputRequest, make: &mut dyn FnMut() -> OutputCallback
     let exclusive = |cb| crate::open_exclusive_output(req.device.clone(), req.sample_rate, req.buffer_frames, req.channels, cb);
     match req.driver {
         Some(Driver::Asio) => {
-            let o = CpalOutput::open(true, req, make())?;
-            Ok(wrap(Driver::Asio, Kind::Cpal(o.0), o.1, vec![]))
+            let drivers = asio_drivers();
+            let (asio_req, note) = for_asio(req, &drivers, true)?;
+            let o = CpalOutput::open(true, &asio_req, make())?;
+            Ok(wrap(Driver::Asio, Kind::Cpal(o.0), o.1, note.into_iter().collect()))
         }
         Some(Driver::Exclusive) => {
             let o = exclusive(make())?;
@@ -135,10 +137,10 @@ pub fn open_output(req: &OutputRequest, make: &mut dyn FnMut() -> OutputCallback
         None => {
             let mut notes = Vec::new();
             let drivers = asio_drivers();
-            let wanted = req.device.as_ref().map(|d| d.to_lowercase());
-            if drivers.iter().any(|n| wanted.as_ref().is_none_or(|w| n.to_lowercase().contains(w))) {
-                match CpalOutput::open(true, req, make()) {
-                    Ok(o) => return Ok(wrap(Driver::Asio, Kind::Cpal(o.0), o.1, notes)),
+            // ASIO first, if one of its drivers belongs to the chosen output (or nothing was chosen).
+            if let Ok((asio_req, note)) = for_asio(req, &drivers, false) {
+                match CpalOutput::open(true, &asio_req, make()) {
+                    Ok(o) => return Ok(wrap(Driver::Asio, Kind::Cpal(o.0), o.1, note.into_iter().collect())),
                     Err(e) => notes.push(format!("ASIO was tried first and failed: {e}")),
                 }
             }
@@ -155,6 +157,30 @@ pub fn open_output(req: &OutputRequest, make: &mut dyn FnMut() -> OutputCallback
                 }
             }
         }
+    }
+}
+
+/// The request with its device named the way the ASIO driver is named, and a note if that name
+/// was worked out. `only_one_will_do`: with ASIO asked for outright, a machine's only ASIO driver
+/// is used even when its name shares nothing with the chosen output.
+fn for_asio(req: &OutputRequest, drivers: &[String], only_one_will_do: bool) -> Result<(OutputRequest, Option<String>), DawError> {
+    if drivers.is_empty() {
+        return Err(DawError::new(Code::NoOutputDevice, "no ASIO driver is installed on this machine (Settings, Audio shows what is)"));
+    }
+    let Some(wanted) = &req.device else { return Ok((req.clone(), None)) };
+    if drivers.iter().any(|d| d.eq_ignore_ascii_case(wanted)) {
+        return Ok((req.clone(), None));
+    }
+    let picked = crate::closest_name(wanted, drivers).or_else(|| (only_one_will_do && drivers.len() == 1).then(|| drivers[0].as_str()));
+    match picked {
+        Some(name) => Ok((
+            OutputRequest { device: Some(name.to_string()), ..req.clone() },
+            Some(format!("{wanted} is played through its ASIO driver, {name}.")),
+        )),
+        None => Err(DawError::new(
+            Code::DeviceNotFound,
+            format!("no ASIO driver belongs to '{wanted}'. ASIO drivers installed: {}. Choose one under Settings, Audio", drivers.join("; ")),
+        )),
     }
 }
 
@@ -262,8 +288,16 @@ fn start(
         })?,
         Some(needle) => {
             let lower = needle.to_lowercase();
-            let all = host.output_devices().map_err(|e| DawError::new(Code::AudioDriverError, format!("listing {what} outputs: {e}")))?;
-            let mut hits: Vec<cpal::Device> = all.filter(|d| named(d).to_lowercase().contains(&lower)).collect();
+            let all: Vec<cpal::Device> = host.output_devices().map_err(|e| DawError::new(Code::AudioDriverError, format!("listing {what} outputs: {e}")))?.collect();
+            let names: Vec<String> = all.iter().map(named).collect();
+            let close = crate::closest_name(needle, &names).map(str::to_string);
+            let mut hits: Vec<cpal::Device> = all.into_iter().filter(|d| named(d).to_lowercase().contains(&lower)).collect();
+            if hits.is_empty()
+                && let Some(close) = close
+                && let Ok(found) = host.output_devices()
+            {
+                hits = found.filter(|d| named(d) == close).collect();
+            }
             match hits.len() {
                 1 => hits.remove(0),
                 0 => return Err(DawError::new(Code::DeviceNotFound, format!("no {what} output's name contains '{needle}'"))),

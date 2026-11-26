@@ -121,6 +121,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "audio-codec-algorithms"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1254ebf6529f3763c491acfb5ab6e960809e3c75a38584cc664f8c5667fb7107"
+
+[[package]]
+name = "audioadapter"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1292ef9edf681b7426ed089004b021a42896492f58bd0c909ad44e5faec9ac4"
+
+[[package]]
+name = "audioadapter-buffers"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46289a81a3bfa26d0f8b2415f8ca9decde9a66308a150568af5c102381b3c8ce"
+dependencies = [
+ "audioadapter",
+ "audioadapter-sample",
+ "num-traits",
+]
+
+[[package]]
+name = "audioadapter-sample"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5258faecf4edbe35ec483bda9b1f7438e6b391891819269c6b5461aeaa0e8d7d"
+dependencies = [
+ "audio-codec-algorithms",
+ "num-traits",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -621,7 +654,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "crucible-app"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "crucible-diagnostics",
@@ -633,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-audio-io"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "cpal",
  "crucible-diagnostics",
@@ -645,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-cli"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "crucible-audio-io",
@@ -659,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-diagnostics"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -671,27 +704,29 @@ dependencies = [
 
 [[package]]
 name = "crucible-dsp"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "realfft",
 ]
 
 [[package]]
 name = "crucible-engine"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "crucible-audio-io",
  "crucible-diagnostics",
  "crucible-dsp",
+ "crucible-midi-io",
  "crucible-project",
  "hound",
+ "rubato",
  "serde_json",
  "symphonia",
 ]
 
 [[package]]
 name = "crucible-midi-io"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "crucible-diagnostics",
  "midir",
@@ -700,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-plugin-host"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "crucible-diagnostics",
  "serde",
@@ -710,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "crucible-project"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "crucible-diagnostics",
  "serde",
@@ -2237,7 +2272,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "m0-omnisphere"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "cpal",
@@ -3281,6 +3316,22 @@ name = "rtrb"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "342e1478a6e1c839e7405033eabfdc954d4d5dabd39f34e83420a43a95acfb04"
+
+[[package]]
+name = "rubato"
+version = "5.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b4da228e06632d025557f798114057cf27a4c6a71d40024c84d6db82fa5ef4a"
+dependencies = [
+ "audioadapter",
+ "audioadapter-buffers",
+ "num-complex",
+ "num-integer",
+ "num-traits",
+ "realfft",
+ "visibility",
+ "windowfunctions",
+]
 
 [[package]]
 name = "rustc-hash"
@@ -4646,6 +4697,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "visibility"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d674d135b4a8c1d7e813e2f8d1c9a58308aee4a680323066025e53132218bd91"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "vst3"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4981,6 +5043,15 @@ dependencies = [
  "raw-window-handle",
  "windows-sys 0.61.2",
  "windows-version",
+]
+
+[[package]]
+name = "windowfunctions"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90628d739333b7c5d2ee0b70210b97b8cddc38440c682c96fd9e2c24c2db5f3a"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]

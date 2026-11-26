@@ -1,6 +1,6 @@
 // Crucible's window: top bar, track headers, timeline, bottom panel. Views draw from `state`
 // (the engine's truth) and change it only through `run(command)`.
-import { closeLayer, layerOpen, markPrompt, menu, openExport, openSettings, pathPrompt, textPrompt, type Item } from './dialogs'
+import { askConvert, closeLayer, layerOpen, markPrompt, menu, openExport, openSettings, pathPrompt, textPrompt, type Item } from './dialogs'
 import { chosenOutput, watchDevices } from './devices'
 import { beats, ids, inTauri, PPQ, q, transportName, type Clip } from './engine'
 import { icon } from './icons'
@@ -10,7 +10,7 @@ import { deleteSelectedNote, drawMeters, renderPanel, renderTabs, selectTab, set
 import { bpb, changed, clip, created, dbToPos, dragNumber, esc, flush, fmtDb, fmtPan, onChange, owe, pointerHeld, posToDb, redraw, run, selectClips, state, toast, toggleMute, toggleSolo, track, ui, view } from './store'
 import { advance, device, settling, togglePlay as transportToggle, tp } from './transport'
 import { clampScroll, draw, dropTarget, follow, hooks, pasteTarget, rowH, trackColor, zoom } from './timeline'
-import { startTrail } from './trail'
+import { frameDrawn, startTrail } from './trail'
 
 // First, so that anything that goes wrong while the window builds itself is on record.
 startTrail()
@@ -328,9 +328,26 @@ async function importFiles(paths: string[], trackId: number | null, at: number) 
   }
   let target = track(trackId)?.kind === 'audio' ? trackId : null
   const made: number[] = []
+  // Once the person has agreed to convert, the rest of the files in this drop are converted too.
+  let convert = false
   for (const path of paths) {
-    const [imp] = await run(`audio.import ${q(path)}`)
+    let [imp] = await run(`audio.import ${q(path)}${convert ? ' --convert' : ''}`, { handles: ['E5017'] })
+    if (imp && !imp.ok && imp.code === 'E5017') {
+      // A file at another rate: ask, instead of refusing it. Its rate is in the message.
+      const rate = +(imp.message?.match(/is (\d+) Hz/)?.[1] ?? 0), secs = +(imp.message?.match(/([\d.]+) s long/)?.[1] ?? 0)
+      const name = path.split(/[\\/]/).pop() ?? path
+      const audioClips = state.project.clips.some((c) => c.content.kind === 'audio' && c.content.frames)
+      const answer = await askConvert([[name, rate, secs]], state.project.sample_rate, 'import', !audioClips)
+      if (answer === 'project') {
+        if (!(await run(`project.rate ${rate}`))[0]?.ok) break
+        ;[imp] = await run(`audio.import ${q(path)}`)
+      } else if (answer === 'convert') {
+        convert = true
+        ;[imp] = await run(`audio.import ${q(path)} --convert`)
+      } else break
+    }
     if (!imp?.ok) break
+    const converted = imp.data?.converted === true
     // Never stack a file on top of audio already there: use a new track instead.
     const p = state.project, lenBeats = imp.data.frames / ((imp.data.rate * 60) / p.tempo_bpm)
     if (target !== null && p.clips.some((c) => c.track === target && c.start / PPQ < at + lenBeats && (c.start + c.length) / PPQ > at)) target = null
@@ -339,7 +356,7 @@ async function importFiles(paths: string[], trackId: number | null, at: number) 
       if (!added?.ok) break
       target = added.data.id
     }
-    made.push(...created(await run(`clip.place #${target} ${at} ${q(imp.data.source)}`)))
+    made.push(...created(await run(`clip.place #${target} ${at} ${q(imp.data.source)}${converted ? ' --convert' : ''}`)))
     target = null
   }
   if (made.length) { selectClips(made); changed() }
@@ -406,6 +423,7 @@ function frame(now: number) {
   draw(); drawMeters(); updateReadouts()
   const ms = performance.now() - t0
   perf.frames++; perf.totalMs += ms; perf.worstMs = Math.max(perf.worstMs, ms)
+  frameDrawn(ms)
   if (settling()) requestAnimationFrame(frame)
   else looping = false
 }
@@ -439,6 +457,11 @@ addEventListener('keydown', (e) => {
   const sel = ui.selTrack
   const k = e.key.toLowerCase()
   const handled = () => e.preventDefault()
+  // Selected text (the Console's output, a message) is the person's to copy to the Windows
+  // clipboard. Copy, cut and select-all act on clips only when no text is selected. Before
+  // 2026-11-25 Ctrl+C always copied clips, so copying an error message from the Console failed.
+  const text = getSelection()
+  if (ctrl && (k === 'c' || k === 'x' || k === 'a') && text && !text.isCollapsed && text.toString().trim()) return
   if (ctrl) {
     if (k === 'z' && !e.shiftKey) { handled(); run('undo') }
     else if ((k === 'z' && e.shiftKey) || k === 'y') { handled(); run('redo') }

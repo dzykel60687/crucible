@@ -36,11 +36,15 @@ Update this file at the end of every session. Keep it short. Newest log entry on
 - **ASIO is compiled in** (D-035, decided): cpal's `asio` feature. The SDK's host files are in the repo
   (`third-party/asiosdk`); LLVM's `libclang.dll` sits beside the repo in `..\crucible-sdk`. One `open_output` picks ASIO, else exclusive, else shared (D-018).
   **No ASIO stream has ever run**: this laptop has no ASIO driver. The Lynx is the first test.
-- **Released: 0.0.2** (2026-11-25, at his word: "push this and installer up to Git"). On the
-  repo's Releases page as `v0.0.2`, a pre-release, with `Crucible_0.0.2_x64_en-US.msi`: 6 MB,
-  installs 17 MB (the window, the `crucible` tool, `LICENSE.txt`, `THIRD-PARTY-NOTICES.txt`).
-  Unsigned. Also in `dist/installer`. **Not yet installed on any PC by anyone** (needs
-  administrator rights). `v0.0.1` is still there; it has the Stop and fader faults.
+- **Released: 0.0.3** on GitHub (`v0.0.3`, pre-release, 2026-11-25): per-user installer
+  (`%LOCALAPPDATA%\Programs\Crucible`, no admin, the log beside the program), unsigned, never goes
+  online (D-041). Never installed on any PC by Claude. An older 0.0.1 or 0.0.2 install (Program
+  Files) must be uninstalled first; later versions install over 0.0.3.
+- **0.0.3 (2026-11-25, from his home-desktop test with a Behringer UMC202HD):** imported files stay
+  as they are, MP3/FLAC and other rates play from memory (D-039); conversion offered instead of
+  refused; ASIO finds the interface under its driver's name (D-040); MIDI keyboards listed; Ctrl+C
+  copies selected text; the log records everything while testing, a line every second; the logo
+  is an anvil (side on, after his reference picture); nothing goes online (D-041).
 - **Built-in effects** (D-033, 2026-11-23): Reverb (Room/Hall/Plate), IR Reverb (zero-latency
   convolution with his IR files), Delay and Echo, as track inserts edited by `fx.*` commands and
   from the mixer slots. Machine-tested (`crucible-dsp`); not yet heard. CPU budget: quality
@@ -74,18 +78,19 @@ Update this file at the end of every session. Keep it short. Newest log entry on
 
 | # | Blocker | His action |
 |---|---|---|
-| 1 | **Send the log from the PC where Stop failed** | From that PC, after installing 0.0.2: play, then Settings, Diagnostics, Create report file. The window faults are fixed; why dropouts were being counted there is still a guess (D-038) |
-| 2 | **Listen: playback and effects** | `docs/test-reports/2026-11-23-devlaptop-live-playback-and-asio.md` steps 1 to 5; the effects exports in `2026-11-23-devlaptop-effects.md` |
-| 3 | **Lynx machine: ASIO and M0** | Same report steps 6 and 7 (first ever ASIO run), then `2026-11-20-M0-stepB-checklist.md` |
-| 4 | **Devices on real hardware** | `docs/test-reports/2026-11-25-devlaptop-gui-devices-log.md`: plug a device in and out; play with a browser playing |
-| 5 | **Default driver: keep ASIO, exclusive, shared; or Shared first?** | Shared never silences other programs but is not bit-exact (D-038, D-018) |
-| 6 | **Per-user installer?** | Would put the log beside an installed program and need no admin rights; needs one download (NSIS) or a WiX change |
+| 1 | **Install 0.0.3 on the home desktop** | Released 2026-11-25. Uninstall the old Crucible first (Apps list); later versions install over it |
+| 2 | **Home desktop: ASIO on the UMC202HD, a 4-minute import, export, MIDI keyboard listed** | `docs/test-reports/2026-11-25-home-desktop-umc202hd.md`; then Settings, Diagnostics, Create report file, and send it |
+| 3 | **The export that "plays no sound"** | Does `Crucible.wav` play in Reaper, or with Reaper closed? Its peak was +1.15 dBFS, so the file is not silent |
+| 4 | **Listen: playback and effects** | `docs/test-reports/2026-11-23-devlaptop-live-playback-and-asio.md` steps 1 to 5 |
+| 5 | **Lynx machine: ASIO and M0 (the gate for instruments and VST3)** | Same report steps 6 and 7, then `2026-11-20-M0-stepB-checklist.md` with Keyscape or Omnisphere |
+| 6 | **Default driver: keep ASIO, exclusive, shared; or Shared first?** | Shared never silences other programs but is not bit-exact (D-038) |
 | 7 | **"GPLv3 or later", or version 3 only?** | Claude chose "or later" (D-036) |
-| 8 | **Proposed decisions and open questions** | D-030 to D-034, D-037, D-038; Q7 standing approval to commit and push; Q13 sample-rate conversion at import |
-| 9 | **Rewrite the git history?** | An old wording he may want gone (asked 2026-11-23). Needs a force-push; sooner is better. Yes or no |
+| 8 | **Proposed decisions** | D-030 to D-034, D-037, D-038; Q7 standing approval to commit and push |
+| 9 | **Rewrite the git history?** | An old wording he may want gone (asked 2026-11-23). Needs a force-push. Yes or no |
+| 10 | **Remove 0.0.1 and 0.0.2 from the releases page?** | They have the Stop fault and the import bloat. Yes or no |
 
 Also open, lower: develop on the Lynx machine long term (Q2); a free VST3 instrument on the dev
-machine (Q6); GUI feel of mouse editing, import, export, paste and the piano-roll wheel.
+machine (Q6); GUI feel of mouse editing, the five layouts and the piano roll.
 
 ## Next actions, in order
 
@@ -99,11 +104,11 @@ machine (Q6); GUI feel of mouse editing, import, export, paste and the piano-rol
 5. Instruments and monitoring (M3) render inside the callback, not the feeder (D-034).
 
 6. For every later release, in this order: bump `version` in `Cargo.toml`,
-   `app/src-tauri/tauri.conf.json` and `app/package.json`; re-run `tools/third-party-notices.ps1`
-   if dependencies changed; **commit**; only then build the installer, so that its log headers
-   name that commit; tag the commit `v<version>`, push, and attach the installer to a GitHub
-   release made from the tag (the tag is the installer's source, which the GPL requires to stay
-   available).
+   `app/src-tauri/tauri.conf.json`, `app/package.json` and `app/package-lock.json`; re-run
+   `tools/third-party-notices.ps1` if dependencies changed; scan for employer and personal data;
+   **commit**; build (so the log headers name the commit); run `tools/gui-test.ps1` on the build;
+   tag `v<version>`, push; create the GitHub release with the `.msi`; check the anonymous download.
+   Crucible never checks for updates itself (D-041): a newer installer replaces the older version.
 7. Logging follow-ups (D-037): record and MIDI input will need their own `AUDIO`-style lines;
    `crucible report` should say the power plan and whether the laptop is on battery.
 8. GUI test follow-ups (D-038): checks for the timeline (clip drag, trim, box select), the piano
@@ -122,7 +127,7 @@ are in the repo, `third-party/asiosdk`. `.cargo/config.toml` points at both; the
 and `LIBCLANG_PATH` environment variables override. Without libclang the build fails in
 `asio-sys`. The downloaded zips are kept in `..\crucible-sdk\downloads`.
 
-Installer (WiX is fetched by Tauri on first use): `cargo build --release -p crucible-cli`, then
+Installer (WiX is fetched by Tauri on first use; per-user since 0.0.3): `cargo build --release -p crucible-cli`, then
 `cd app && npx tauri build --config src-tauri/tauri.bundle.json` writes
 `target/release/bundle/msi/Crucible_<version>_x64_en-US.msi`. It installs `crucible-app.exe`, and the
 `crucible.exe` command-line tool in a `tools` folder, to Program Files, adds a Start menu entry and an uninstaller, and
@@ -212,6 +217,33 @@ the 2026-11-21 batch (mouse editing, layouts, fonts, green, research). Ask befor
 Related: `..\music-editor` is Dzyan's own MIT Rust audio editor with reusable DSP and loudness code.
 
 ## Session log
+
+### 2026-11-25 (evening), his home-desktop test: storage, conversion, ASIO name, MIDI, log (Claude Opus 5.5)
+
+- Dzyan tested 0.0.2 at home (Behringer UMC202HD, M-Audio Axiom 61, Reaper alongside) and sent:
+  log everything while testing; log in the program's folder; offer to convert to 192 kHz instead
+  of refusing; a 4-minute import takes 7 to 8 s; imports become 200 MB WAVs ("shouldn't they be
+  kept in Memory?"); an exported WAV "plays no sound"; E2002 with ASIO; Ctrl+C blocks copying
+  text; the MIDI keyboard is not detected; where are VST3 and instruments.
+- Done: D-039 (files kept as they are, memory for MP3/FLAC/other rates, rubato conversion when
+  agreed, `--convert`, window questions), D-040 (ASIO name matching, rate message per driver,
+  MIDI list, Ctrl+C), log everything (`ALIVE` every second, device-opening steps, Windows device
+  notices, window presses, wheel, focus, popups, drawing), per-user installer (WiX template).
+  Version 0.0.3. 78 unit tests, 39 GUI checks pass.
+- Found while there: the window's Settings told him Windows would convert at 192 kHz even with
+  ASIO, which is false; that is what pushed him toward a 192 kHz project.
+- Not verified: anything on his desktop. The silent export: its log line says peak +1.15 dBFS, so
+  the samples are there; most likely Reaper held the interface through ASIO, so Windows' player
+  could not use it. Asked him to check.
+- VST3 and instruments: not in the window yet; they follow M0 (the plugin-hosting test with
+  `m0-play`).
+- The logo is an anvil now (his word, same evening; D-029). The first two tries (side on, then from
+  above) did not read well to him.
+- He asked for the installer to work as an updater; Claude built an in-program updater (GitHub,
+  signed); he then decided nothing may go online (D-041). The updater was removed before release,
+  and the installer no longer downloads WebView2. A newer installer upgrades in place.
+- The logo was redrawn a third time after his reference picture: side on, the classic anvil with
+  its edge lines (horn, step block, face plate, waist, arch), and a wave on the side.
 
 ### 2026-11-25, Stop and fader faults, real devices, one log file, GUI test (Claude Fable 5.2)
 

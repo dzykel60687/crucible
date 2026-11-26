@@ -1,6 +1,5 @@
 {
   "bundle": {
-    "resources": { "../../target/release/crucible.exe": "tools/crucible.exe", "../../LICENSE": "LICENSE.txt",
-                   "../../THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt" }
+    "resources": {}
   }
 }

@@ -36,6 +36,13 @@ decision depends on before relying on it.
   use is listed here with its source and licence. AGPL code (Zrythm, JUCE 8) and GPLv2-only code
   still may not.
 
+## Added 2026-11-25
+
+| What | Licence | Used for |
+|---|---|---|
+| `rubato` 5.1 (with `realfft`, `rustfft`, `audioadapter`) | MIT or Apache-2.0 (realfft, windowfunctions: MIT) | Sample-rate conversion (D-039), FFT resampler in 64-bit |
+| Tauri's default WiX template (tauri-bundler) | MIT or Apache-2.0 | `app/src-tauri/wix/main.wxs`, changed for a per-user install; extracted from the Tauri CLI that builds the installer |
+
 ## Crucible's own licence (D-036, 2026-11-23)
 
 - `LICENSE`: the GNU GPL version 3 text, copied unchanged from the copy Git for Windows ships

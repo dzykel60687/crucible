@@ -420,7 +420,7 @@ function clipEditor(view: HTMLElement) {
   view.innerHTML = `<div class="editor">
     <div class="toolbar"><span class="title">${c ? esc(c.name) : 'Clip editor'}</span>
       ${c ? `<button class="btn solid" data-split title="Split at the playhead (Ctrl+E)">Split at playhead</button><button class="btn" data-del title="Delete (Del)">Delete</button>` : ''}
-      <span class="muted">${src ? (src.frames ? `${esc(src.source)} · ${src.rate / 1000} kHz · ${(src.frames / src.rate).toFixed(2)} s` : `${esc(src.source)} <span class="tag demo">demo audio</span>`) : ''}</span></div>
+      <span class="muted">${src ? (src.frames ? `${esc(src.source)} · ${src.rate / 1000} kHz${src.rate !== state.project.sample_rate ? ` <span class="tag demo" title="The file is kept as it is; its sound is converted while it plays">converted to ${state.project.sample_rate / 1000} kHz</span>` : ''} · ${(src.frames / src.rate).toFixed(2)} s` : `${esc(src.source)} <span class="tag demo">no file</span>`) : ''}</span></div>
     ${c && src ? `<div class="split"><canvas></canvas><div class="props">
       <label>Name <span class="val name-edit" title="Click to rename">${esc(c.name)}</span></label>
       <label>Start <span class="val">${pos(c.start)}</span></label>
@@ -428,7 +428,7 @@ function clipEditor(view: HTMLElement) {
       <label>From source <span class="val">${+(c.offset / PPQ).toFixed(3)} beats in</span></label>
       <label>Gain <span class="val knob-num" data-gain title="Drag; double-click for 0 dB">${fmtDb(c.gain_db)} dB</span></label>
       <label>Track <span class="val">${esc(state.project.tracks.find((t) => t.id === c.track)?.name ?? '')}</span></label>
-      <label>Sample rate <span class="val">${state.project.sample_rate} Hz, no resampling</span></label>
+      <label>Sample rate <span class="val">${src && src.frames && src.rate !== state.project.sample_rate ? `file ${src.rate} Hz, converted to ${state.project.sample_rate} Hz` : `${state.project.sample_rate} Hz, not converted`}</span></label>
     </div></div>` : '<div class="empty-note">No audio clip selected.<br>Double-click an audio clip in the timeline.</div>'}
   </div>`
   if (!c || !src) return

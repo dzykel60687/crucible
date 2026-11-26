@@ -75,6 +75,34 @@ export function pathPrompt(mode: 'open' | 'save' | 'new') {
 }
 
 /** One text field, OK and Cancel. Calls done with the trimmed value if it changed. */
+/** Ask a question with a few answers. Resolves to the chosen answer's key, or null for Cancel,
+ *  Escape or a click outside. */
+export function choose(title: string, html: string, answers: [string, string][]): Promise<string | null> {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (v: string | null) => { if (!done) { done = true; resolve(v) } }
+    const d = dialog(title, `<div class="content">${html}</div>`, {
+      footer: '<button class="btn" data-close>Cancel</button>' + answers.map(([k, label], i) => `<button class="btn ${i === 0 ? 'primary' : ''}" data-k="${esc(k)}">${esc(label)}</button>`).join(''),
+    })
+    d.querySelectorAll<HTMLButtonElement>('[data-k]').forEach((b) => (b.onclick = () => { closeLayer(); finish(b.dataset.k!) }))
+    // Closed any other way (Cancel, the X, Escape, a click outside): no answer.
+    new MutationObserver((_, o) => { if (!d.isConnected) { o.disconnect(); finish(null) } }).observe(layer, { childList: true })
+  })
+}
+
+/** A file or project at another rate: convert, or not. `files` are [name, rate, seconds]. */
+export async function askConvert(files: [string, number, number][], to: number, why: 'import' | 'rate', projectEmpty = false): Promise<'convert' | 'project' | null> {
+  const mb = Math.round(files.reduce((m, f) => m + f[2] * to * 2 * 4, 0) / 1_048_576)
+  const list = files.slice(0, 4).map(([n, r]) => `<li>${esc(n)}: ${r / 1000} kHz</li>`).join('') + (files.length > 4 ? `<li>and ${files.length - 4} more</li>` : '')
+  const up = files.some((f) => f[1] < to)
+  const html = `<p style="margin:0">${why === 'import' ? 'This audio is at another sample rate than the project' : 'This project has audio at other sample rates'} (${to / 1000} kHz${why === 'rate' ? ', the new rate' : ''}):</p>
+    <ul style="margin:8px 0;padding-left:20px">${list}</ul>
+    <p style="margin:0;color:var(--text-dim)">Converting keeps the files exactly as they are and converts the sound while it plays, with a high-quality converter. It needs about ${mb} MB of memory while the project is open.${up ? ` Converting up to a higher rate adds no detail that the file does not have.` : ''}</p>`
+  const answers: [string, string][] = [['convert', `Convert to ${to / 1000} kHz`]]
+  if (why === 'import' && projectEmpty && files.length === 1) answers.push(['project', `Set the project to ${files[0][1] / 1000} kHz`])
+  return (await choose(why === 'import' ? 'Convert the sample rate?' : 'Convert audio to the new rate?', html, answers)) as 'convert' | 'project' | null
+}
+
 export function textPrompt(title: string, value: string, done: (v: string) => void) {
   const d = dialog(title, `<div class="content"><input class="input" value="${esc(value)}" spellcheck="false"></div>`, { footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" data-go>OK</button>' })
   const input = d.querySelector('input')!
@@ -115,7 +143,7 @@ export function openExport() {
   const sep = state.folder?.includes('/') ? '/' : '\\'
   const file = state.folder ? `${state.folder}${sep}${p.name}.wav` : ''
   const d = dialog('Export', `<div class="content">
-      <div class="row"><span>Format</span><span style="color:var(--text-dim)">WAV, stereo, ${p.sample_rate} Hz (the project rate, no resampling)</span></div>
+      <div class="row"><span>Format</span><span style="color:var(--text-dim)">WAV, stereo, ${p.sample_rate} Hz (the project rate)</span></div>
       <div class="row"><span>Bit depth</span><div class="seg" data-g="bits"><button data-v="16">16-bit</button><button data-v="24" class="on">24-bit</button><button data-v="32f">32-bit float</button></div></div>
       <div class="row"><span>Range</span><div class="seg" data-g="range"><button data-v="song" class="on">Whole song</button><button data-v="selection" ${ranges.selection ? '' : 'disabled title="No clips selected"'}>Selection</button></div></div>
       <div class="row"><span>Dither</span><label style="color:var(--text-dim)" data-dither>Off: 24-bit needs none</label></div>
@@ -248,12 +276,22 @@ function wire(s: string, pane: HTMLElement) {
     const send = async () => {
       const v = el.value.trim()
       const arg = el.dataset.cmd === 'project.signature' ? v.split(/[\s/]+/).join(' ') : q(v)
-      await run(`${el.dataset.cmd} ${arg}`)
+      if (el.dataset.cmd === 'project.rate') await setRate(+v)
+      else await run(`${el.dataset.cmd} ${arg}`)
       refresh(s, pane)
     }
     el.onchange = send
     el.onkeydown = (e) => { if (e.key === 'Enter') (el as HTMLInputElement).blur(); e.stopPropagation() }
   })
+}
+
+/** Change the project's rate. Audio at other rates is converted, if the person agrees. */
+async function setRate(hz: number) {
+  const others = new Map<string, [string, number, number]>()
+  for (const c of state.project.clips) if (c.content.kind === 'audio' && c.content.frames && c.content.rate !== hz) others.set(c.content.source, [c.content.source, c.content.rate, c.content.frames / c.content.rate])
+  if (!others.size) return run(`project.rate ${hz}`)
+  const answer = await askConvert([...others.values()], hz, 'rate')
+  if (answer === 'convert') return run(`project.rate ${hz} --convert`)
 }
 
 function refresh(s: string, pane: HTMLElement) { pane.innerHTML = sectionHtml(s); wire(s, pane) }

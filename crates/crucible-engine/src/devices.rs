@@ -13,14 +13,14 @@ pub(crate) static SPECS: &[Spec<Engine>] = &[
     Spec {
         name: "audio.devices",
         args: &[opt("probe", Kind::Bool, "also ask each device which rates it accepts in exclusive mode, and list ASIO drivers (a second or two)")],
-        help: "List audio outputs and inputs: which is the default, the rate each runs at, who else is using it.",
+        help: "List audio outputs and inputs (the default, the rate each runs at, who else is using it) and MIDI inputs.",
         effect: Effect::Read,
         run: audio_devices,
     },
     Spec {
         name: "audio.changes",
         args: &[],
-        help: "Used by the window: a number that moves when a device is plugged in, unplugged or changed.",
+        help: "Used by the window: a number that moves when an audio or MIDI device is plugged in, unplugged or changed.",
         effect: Effect::Read,
         run: audio_changes,
     },
@@ -34,10 +34,31 @@ pub(crate) struct Devices {
     /// ASIO driver names from the last `--probe`. Asking again loads the drivers, which must not
     /// happen while one of them is playing.
     asio: Vec<String>,
+    /// MIDI inputs at the last look, and how many times that list has changed. Windows has no
+    /// notice for MIDI devices that this program receives, so the list is compared each time.
+    midi: Option<Vec<String>>,
+    midi_changes: u64,
+}
+
+/// MIDI input names, and an error if the MIDI system could not be asked.
+fn midi_inputs() -> (Vec<String>, Option<String>) {
+    let r = crucible_midi_io::enumerate_inputs();
+    (r.inputs.into_iter().map(|p| p.name).collect(), r.error)
+}
+
+/// Compare the MIDI inputs with the last look: what was connected or disconnected.
+fn midi_diff(d: &mut Devices, now: &[String]) -> Vec<String> {
+    let Some(old) = d.midi.replace(now.to_vec()) else { return Vec::new() };
+    let mut out: Vec<String> = now.iter().filter(|n| !old.contains(n)).map(|n| format!("Connected: {n} (MIDI input)")).collect();
+    out.extend(old.iter().filter(|o| !now.contains(o)).map(|o| format!("Disconnected: {o} (MIDI input)")));
+    if !out.is_empty() {
+        d.midi_changes += 1;
+    }
+    out
 }
 
 fn devices(e: &mut Engine) -> &mut Devices {
-    e.devices.get_or_insert_with(|| Devices { watch: io::DeviceWatch::start(), last: None, asio: Vec::new() })
+    e.devices.get_or_insert_with(|| Devices { watch: io::DeviceWatch::start(), last: None, asio: Vec::new(), midi: None, midi_changes: 0 })
 }
 
 fn describe(d: &io::Endpoint) -> String {
@@ -88,19 +109,20 @@ fn audio_devices(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let playing = e.player.is_some();
     let rate = e.project.sample_rate;
     let choice = play::choice_json(e);
+    let (midi, midi_error) = midi_inputs();
     let d = devices(e);
-    let changes = d.last.as_deref().map(|old| diff(old, &now)).unwrap_or_default();
-    match &d.last {
-        // The first look goes into the log whole; after that only what changed.
-        None => diag::event("AUDIO", format!("devices: {}", now.iter().map(describe).collect::<Vec<_>>().join("; "))),
-        Some(_) => changes.iter().for_each(|c| diag::event("AUDIO", format!("device change: {c}"))),
+    let mut changes = d.last.as_deref().map(|old| diff(old, &now)).unwrap_or_default();
+    changes.extend(midi_diff(d, &midi));
+    // The list itself goes into the log with this command's answer; what changed gets its own line.
+    for c in &changes {
+        diag::event("AUDIO", format!("device change: {c}"));
     }
     d.last = Some(now.clone());
     let exclusive = if probe { io::exclusive_capabilities().ok() } else { None };
     if probe && !playing {
         d.asio = io::asio_drivers();
     }
-    let (asio, generation) = (d.asio.clone(), d.watch.changes());
+    let (asio, generation) = (d.asio.clone(), d.watch.changes() + d.midi_changes);
 
     let entry = |x: &io::Endpoint| {
         let mut v = json!(x);
@@ -119,6 +141,15 @@ fn audio_devices(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
             text.push_str("  none\n");
         }
     }
+    text.push_str("MIDI inputs\n");
+    for m in &midi {
+        text.push_str(&format!("  {m}\n"));
+    }
+    match (&midi_error, midi.is_empty()) {
+        (Some(err), _) => text.push_str(&format!("  could not be listed: {err}\n")),
+        (None, true) => text.push_str("  none\n"),
+        _ => {}
+    }
     if probe {
         text.push_str(&format!("ASIO drivers: {}\n", if asio.is_empty() { "none installed".to_string() } else { asio.join("; ") }));
     }
@@ -130,6 +161,7 @@ fn audio_devices(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
         json!({
             "outputs": now.iter().filter(|x| !x.input).map(entry).collect::<Vec<_>>(),
             "inputs": now.iter().filter(|x| x.input).map(entry).collect::<Vec<_>>(),
+            "midi": midi, "midi_error": midi_error,
             "asio": asio, "probed": probe, "changes": changes, "generation": generation,
             "choice": choice, "project_rate": rate, "playing": playing,
         }),
@@ -137,7 +169,18 @@ fn audio_devices(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
 }
 
 fn audio_changes(e: &mut Engine, _: &Args) -> Result<Reply, DawError> {
-    let n = devices(e).watch.changes();
+    let (midi, _) = midi_inputs();
+    let d = devices(e);
+    // Not logged here: the window lists the devices again when this number moves, and that
+    // listing writes what changed.
+    let before = d.midi.clone();
+    if midi_diff(d, &midi).is_empty() {
+        // nothing new
+    } else {
+        // The listing that follows must see the change again, to name it.
+        d.midi = before;
+    }
+    let n = d.watch.changes() + d.midi_changes;
     Ok(Reply::new(format!("{n} device changes since Crucible started"), json!({ "generation": n })))
 }
 
