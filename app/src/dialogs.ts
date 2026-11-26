@@ -177,8 +177,8 @@ export function openExport() {
 
 // ------------------------------------------------------------------ settings: one page
 const SECTIONS = ['Audio', 'Project', 'Appearance', 'Keyboard', 'Diagnostics']
-const ACCENTS = ['#45c08f', '#5aa2ff', '#2dd4bf', '#a78bfa', '#e6b450', '#f47c96']
-const prefs = { accent: '#45c08f', reduceMotion: false }
+const ACCENTS = ['#21a366', '#5aa2ff', '#2dd4bf', '#a78bfa', '#e6b450', '#f47c96']
+const prefs = { accent: '#21a366', reduceMotion: false }
 
 export const SHORTCUTS: [string, string][] = [
   ['Play / stop', 'Space'], ['Return to start', 'Home'],

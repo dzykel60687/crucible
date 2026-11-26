@@ -2,7 +2,7 @@
 
 Update this file at the end of every session. Keep it short. Newest log entry on top.
 
-## Where things stand (as of 2026-11-25)
+## Where things stand (as of 2026-11-26)
 
 - **Phase:** M0. Step A done and verified on the dev workstation. Step B code written,
   **untested with any real plugin**, waiting on Dzyan.
@@ -45,6 +45,8 @@ Update this file at the end of every session. Keep it short. Newest log entry on
   refused; ASIO finds the interface under its driver's name (D-040); MIDI keyboards listed; Ctrl+C
   copies selected text; the log records everything while testing, a line every second; the logo
   is an anvil (side on, after his reference picture); nothing goes online (D-041).
+- **Since 0.0.3, on `main`, not yet in an installer (2026-11-26):** the logo is his pick, the anvil
+  with spectrum sparks and a note (D-029); the accent is Excel's green `#21a366`.
 - **Built-in effects** (D-033, 2026-11-23): Reverb (Room/Hall/Plate), IR Reverb (zero-latency
   convolution with his IR files), Delay and Echo, as track inserts edited by `fx.*` commands and
   from the mixer slots. Machine-tested (`crucible-dsp`); not yet heard. CPU budget: quality
@@ -188,7 +190,8 @@ After adding an error code: `cargo run -p crucible-cli -- codes --markdown` and 
 
 ## Standing approvals
 
-None standing for commits or pushes. One-off, 2026-11-25: commit, push and release `v0.0.2`
+None standing for commits or pushes. One-off, 2026-11-26: commit and push the logo and the green
+("Go ahead and push afterwards"; no release). One-off, 2026-11-25: commit, push and release `v0.0.2`
 ("go and push this and installer up to Git"). One-off, 2026-11-23: commit, push, make the repo public and
 publish release `v0.0.1` with the installer ("Go ahead and push it along with installer to public
 repo"). Downloads approved 2026-11-23: the ASIO SDK, LLVM and WiX
@@ -218,6 +221,27 @@ Related: `..\music-editor` is Dzyan's own MIT Rust audio editor with reusable DS
 
 ## Session log
 
+### 2026-11-26, the new logo and Excel green (Claude Opus 5.5)
+
+- **He picked number 3 as the logo** (the anvil with spectrum sparks and a note cut into it) and
+  saved 5, 6, 13, 15 and 17 as alternatives (D-029); the rest were dropped from
+  `docs/logo-options/`. `app/icon.py` now draws number 3: the app icons, and the top-bar logo
+  (34 x 26 px). Release build: 39 GUI checks pass. Committed and pushed at his word; no release,
+  so 0.0.3 as installed still has the old logo and green until the next installer.
+
+- Of the 12 options he kept only "Spectrum sparks"; asked for it with a music symbol on the anvil,
+  ten more, and a green "closer to Excel green". Gallery rebuilt: 1 current, 2 his pick, 3 his
+  pick with two beamed notes cut into the body, 4 to 13 new (waveform, radial spectrum, piano
+  keys, forging a wave, headphones, EQ curve, solid tile, one-line ring-out, VU meter, staff).
+  The rejected round-1 marks were dropped from the folder.
+- Accent is now `#21a366` (Excel's green), hover `#33c481` (D-029): style.css, the Settings
+  swatches, `app/icon.py` and the regenerated app icons. Release build: 39 GUI checks pass.
+  Not committed (with the options folder).
+- Then round 3 at his ask ("experiment with passthrough and behind ... or different style of
+  anvil"): 14 to 25, a wave through the anvil, a waveform, keys, spectrum, record or striped sun
+  behind it, an anvil cut by waves, a bold geometric anvil (three ways), an outline anvil, an
+  8-bit anvil.
+
 ### 2026-11-25 (evening), his home-desktop test: storage, conversion, ASIO name, MIDI, log (Claude Opus 5.5)
 
 - Dzyan tested 0.0.2 at home (Behringer UMC202HD, M-Audio Axiom 61, Reaper alongside) and sent:
@@ -244,6 +268,9 @@ Related: `..\music-editor` is Dzyan's own MIT Rust audio editor with reusable DS
   and the installer no longer downloads WebView2. A newer installer upgrades in place.
 - The logo was redrawn a third time after his reference picture: side on, the classic anvil with
   its edge lines (horn, step block, face plate, waist, arch), and a wave on the side.
+- Released as `v0.0.3` (commit `4325ec2`), at his word ("push it yourself after you're done").
+  Anonymous download hash matched. Then, at his ask, 12 logo options in `docs/logo-options/`
+  (`options.py` draws them; `index.html` shows each as icon, top-bar size and on light). Not committed.
 
 ### 2026-11-25, Stop and fader faults, real devices, one log file, GUI test (Claude Fable 5.2)
 

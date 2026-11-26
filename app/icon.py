@@ -5,11 +5,12 @@ The mark (D-029): an anvil side on, after the reference picture Dzyan sent on 20
 horn to the left, the step block, the face with its overhanging heel, a waist with deep curves on
 both sides, and two feet with an arch between them. Thin lines in the background colour mark the
 edges that make it read as an anvil (the horn's underside, the step block, the face plate, the
-waist, the arch). A sound wave is cut into the side of the body.
+waist, the arch). Since 2026-11-26 (his pick, number 3 of docs/logo-options): analyser bars
+rise off the face like sparks, and two beamed eighth notes are cut into the body.
 
-Shapes are written in the reference picture's pixels (540 x 360) and scaled into the logo's 32
-units, so they can be compared with it directly. One set of shapes makes both the icon and the
-SVG. Standard library only.
+The anvil is written in the reference picture's pixels (540 x 360) and scaled into the logo's 32
+units, so it can be compared with it directly; the bars and the notes are in logo units. One set
+of shapes makes both the icon and the SVG. Standard library only.
 
     python -I icon.py && npx tauri icon app-icon.png -o src-tauri/icons
     (then delete the android, ios, Square*, StoreLogo and 64x64 files it also writes)
@@ -56,9 +57,44 @@ LINES = [
     [('M', (366, 123)), ('C', (350, 146), (340, 186), (356, 220)), ('C', (366, 240), (388, 256), (414, 264))],  # the waist, right
     [('M', (236, 266)), ('C', (252, 232), (334, 232), (350, 266))],            # over the arch
 ]
-# The sound wave on the anvil's side: its turning points, joined by half-cosines.
-WAVE = [(232, 130), (249, 116), (269, 146), (289, 102), (309, 158), (328, 118), (341, 130)]
-WAVE_WIDTH = 0.9
+# The analyser bars over the face, in logo units: left edge, width, bottom, heights, corner radius.
+BARS_X, BARS_STEP, BAR_W, BARS_BOTTOM, BAR_R = 13.07, 1.95, 1.4, 7.7, 0.3
+BAR_HEIGHTS = [3.0, 5.0, 7.5, 6.0, 4.0, 6.5, 4.5, 2.5, 1.5]
+# Two beamed eighth notes cut into the body, in logo units: the heads (tilted ellipses), the
+# stems rising from the heads' right sides, and the beam joining the stem tops.
+HEADS = [(14.57, 14.65), (18.87, 14.15)]
+HEAD_RX, HEAD_RY, HEAD_TILT = 1.2, 0.875, -20.0
+STEM_W, STEM_H, STEM_AT, BEAM_H = 0.5, 4.0, 1.1, 1.0
+
+
+def bar_rects():
+    """(x, y, w, h) of each bar."""
+    return [(BARS_X + k * BARS_STEP, BARS_BOTTOM - h, BAR_W, h) for k, h in enumerate(BAR_HEIGHTS)]
+
+
+def note_parts():
+    """The notes as polygons: two heads, two stems, the beam."""
+    a = math.radians(HEAD_TILT)
+    parts, tops = [], []
+    for cx, cy in HEADS:
+        parts.append([(cx + HEAD_RX * math.cos(t) * math.cos(a) - HEAD_RY * math.sin(t) * math.sin(a),
+                       cy + HEAD_RX * math.cos(t) * math.sin(a) + HEAD_RY * math.sin(t) * math.cos(a))
+                      for t in (2 * math.pi * k / 48 for k in range(48))])
+        sx = cx + STEM_AT
+        parts.append([(sx - STEM_W, cy - STEM_H), (sx, cy - STEM_H), (sx, cy), (sx - STEM_W, cy)])
+        tops.append((sx, cy - STEM_H))
+    (ax, ay), (bx, by) = tops
+    parts.append([(ax - STEM_W, ay), (bx, by), (bx, by + BEAM_H), (ax - STEM_W, ay + BEAM_H)])
+    return parts
+
+
+def rounded_rect(x, y, w, h, r):
+    pts = []
+    for cx, cy, a0 in ((x + w - r, y + r, -90), (x + w - r, y + h - r, 0), (x + r, y + h - r, 90), (x + r, y + r, 180)):
+        for k in range(9):
+            a = math.radians(a0 + 90 * k / 8)
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return pts
 
 
 # ---------------------------------------------------------------- geometry
@@ -79,17 +115,6 @@ def path_points(ops, n=40):
     return pts
 
 
-def wave_points():
-    pts = []
-    for a, b in zip(WAVE, WAVE[1:]):
-        (u0, v0), (u1, v1) = R(*a), R(*b)
-        for k in range(30):
-            t = k / 30
-            pts.append((u0 + (u1 - u0) * t, v0 + (v1 - v0) * (1 - math.cos(math.pi * t)) / 2))
-    pts.append(R(*WAVE[-1]))
-    return pts
-
-
 def svg():
     def f(v):
         return f'{round(v, 2):g}'
@@ -97,22 +122,27 @@ def svg():
     def d(ops):
         return ''.join(op + ' '.join(f'{f(x)} {f(y)}' for x, y in (R(*q) for q in p)) for op, *p in ops)
 
+    def poly(pts):
+        return 'M' + 'L'.join(f'{f(x)} {f(y)}' for x, y in pts) + 'Z'
+
     lines = ''.join(f'<path d="{d(ops)}"/>' for ops in LINES)
-    w = [R(*q) for q in WAVE]
-    wd = f'M{f(w[0][0])} {f(w[0][1])}' + ''.join(
-        f'C{f(x0 + (x1 - x0) * 0.46)} {f(y0)} {f(x1 - (x1 - x0) * 0.46)} {f(y1)} {f(x1)} {f(y1)}' for (x0, y0), (x1, y1) in zip(w, w[1:]))
-    # Cropped to the anvil (it is about twice as wide as tall), so the top bar can show it large.
-    return (f'<svg viewBox="0.4 7.8 31.2 16.4"><path d="{d(ANVIL)}Z" fill="currentColor"/>'
-            f'<g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="{EDGE}" style="stroke:var(--surface)">{lines}'
-            f'<path d="{wd}" stroke-width="{WAVE_WIDTH}"/></g></svg>')
+    bars = ''.join(f'<rect x="{f(x)}" y="{f(y)}" width="{f(w)}" height="{f(h)}" rx="{BAR_R}"/>' for x, y, w, h in bar_rects())
+    heads = ''.join(f'<ellipse cx="{f(x)}" cy="{f(y)}" rx="{HEAD_RX}" ry="{HEAD_RY}" transform="rotate({f(HEAD_TILT)} {f(x)} {f(y)})"/>'
+                    for x, y in HEADS)
+    parts = note_parts()  # head, stem, head, stem, beam; the heads are drawn as ellipses above
+    rest = ''.join(f'<path d="{poly(parts[i])}"/>' for i in (1, 3, 4))
+    # Cropped to the mark, so the top bar can show it large. The cuts are drawn in the top bar's colour.
+    return (f'<svg viewBox="0.4 -0.4 31.2 24.3"><path d="{d(ANVIL)}Z" fill="currentColor"/><g fill="currentColor">{bars}</g>'
+            f'<g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="{EDGE}" style="stroke:var(--surface)">{lines}</g>'
+            f'<g style="fill:var(--surface)">{heads}{rest}</g></svg>')
 
 
 # ---------------------------------------------------------------- drawing the icon
 N = 2048  # drawn at 2x, then averaged down to 1024 for smooth edges
 S = 29.0 * N / 1024  # pixels per logo unit
-CX, CY = 16.0, 16.0  # logo point that lands in the middle of the icon
+CX, CY = 16.0, 11.8  # logo point that lands in the middle of the icon (the bars top to the feet)
 BG = (18, 23, 28)
-GREEN = (69, 192, 143)  # --accent
+GREEN = (33, 163, 102)  # --accent, #21a366
 
 
 def px(u, v):
@@ -155,9 +185,12 @@ def in_rounded_square(x, y):
 def main():
     body, cut = bytearray(N * N), bytearray(N * N)
     fill(body, path_points(ANVIL))
+    for rect in bar_rects():
+        fill(body, rounded_rect(*rect, BAR_R))
     for ops in LINES:
         stroke(cut, path_points(ops), EDGE)
-    stroke(cut, wave_points(), WAVE_WIDTH)
+    for part in note_parts():
+        fill(cut, part)
 
     rows = []
     for j in range(0, N, 2):

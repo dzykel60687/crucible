@@ -341,11 +341,15 @@ they multiply states to test and are the clutter this project exists to avoid. A
 is per-machine UI state, not a project command; it becomes a `prefs.*` command when the settings
 file exists.
 
-## D-029. Jade green accent and the mark (an anvil since 2026-11-25). *Decided by Dzyan 2026-11-21, 2026-11-25.*
+## D-029. Green accent and the mark (an anvil since 2026-11-25). *Decided by Dzyan 2026-11-21, 2026-11-25, 2026-11-26.*
 
 "Instead of orange let's go with green, be a little subtle and seamless about it ... make a
-musical/crucible like logo." Accent `#45c08f` (jade), a darker hover, and no orange anywhere:
-track colours are cool and muted so the accent and the red record and clip warnings stand out.
+musical/crucible like logo." Accent `#45c08f` (jade) at first, and no orange anywhere: track
+colours are cool and muted so the accent and the red record and clip warnings stand out.
+**Since 2026-11-26 the green is Excel's `#21a366`** (Dzyan: "our green is too pale, need
+something closer to Excel green"), hover `#33c481` (Excel's light green). Excel's darker brand
+greens (`#107c41`, `#217346`) were not taken: as text on the dark background they fall below
+4.5:1 contrast; `#21a366` gives 5.6:1, and the dark button text on it 5.8:1.
 The mark was a crucible with a sound wave cut through its body. **Since 2026-11-25 it is an
 anvil** (Dzyan: "Logo should also be an anvil instead of the vase"). The first try, side on
 with a thin wave, "looks like a T"; the second, from above with notes, did not read either. The
@@ -354,6 +358,15 @@ plate with an overhanging heel, deep waist curves, two feet and an arch), its ed
 lines, and a sound wave on the side. `app/icon.py` (standard-library Python) draws the app icon
 and prints the SVG for `app/src/icons.ts`, from one set of shapes. Accent swatches in Settings
 start with the green; the others stay as choices.
+
+**Since 2026-11-26 the logo is number 3 of three rounds of drawings (25 in all):** the same anvil,
+analyser bars rising off its face like sparks, and two beamed eighth notes cut into its body
+(Dzyan: "Let's make 3 logo for now"). He saved five alternatives in case it changes:
+5 (the anvil in a ring of analyser bars), 6 (on a piano keyboard), 13 (on a music staff),
+15 (in front of an audio waveform) and 17 (in front of tall analyser bars). They are in
+`docs/logo-options/` (`options.py` draws them, `index.html` shows them), under the numbers he
+picked by. He rejected: the pot or crucible shapes, flames, hammers, a C monogram, the anvil as
+a note, and rings of sound around it.
 
 ## D-030. Pan law: balance, centre is unity. *Proposed by Claude 2026-11-22.*
 
