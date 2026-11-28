@@ -57,7 +57,7 @@ pub(crate) static SPECS: &[Spec<Engine>] = &[
 /// all the trail they need. `project.sync` is the development bridge fetching the state after
 /// every command; the window proper does that without a command.
 fn quiet(name: &str) -> bool {
-    matches!(name, "transport.status" | "log.ui" | "project.sync" | "audio.changes")
+    matches!(name, "transport.status" | "log.ui" | "project.sync" | "audio.changes" | "instrument.status")
 }
 
 /// Returned by [`begin`], handed to [`end`].

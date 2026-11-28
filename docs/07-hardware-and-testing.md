@@ -6,7 +6,7 @@
 |---|---|---|---|---|
 | **Dev workstation** | Where the code is written today | Realtek built-in, Jabra headset, Thunderbolt dock | None suitable | Lenovo laptop. No ASIO interface, no MIDI keyboard, no VST3 plugins. Cannot run any hardware test. Test builds are copied from `dist/` to the music machines. |
 | **Lynx machine** | Reference. Record and judge here. | Lynx PCI card, model not yet given | Lynx's own ASIO driver | Confirm Lynx still publishes a driver for that card on its Windows version. |
-| **Behringer machine** | Second test target | External Behringer USB interface, model not yet given | Depends on the model. UMC HD models have a native ASIO driver. UM2, UMC22 and UCA models rely on the generic ASIO4ALL wrapper. | |
+| **Behringer machine** (his home desktop) | Where he tests today | Behringer UMC202HD 192k, M-Audio Axiom 61 keyboard | The UMC's own ASIO driver ("UMC ASIO Driver") | Keyscape installed (2026-11-27); he will add free instruments. Plugins are not tailored to any one instrument (his word, 2026-11-27). |
 | **Laptop** | Arranging on the go | ASUS Vivobook S 16 Flip TN3604YA. Ryzen, 32 GB. Realtek ALC294, confirmed from the hardware ID `VEN_10EC&DEV_0294`. | No ASIO. WASAPI exclusive mode. | Ships with Dolby Atmos and speaker-flattering processing. Not for judging a mix. Plug the Behringer in for anything played or judged by ear. A Bluetooth speaker is paired with it. Never monitor through Bluetooth. Touchscreen. |
 
 All test machines run Windows 10 or 11. Each has a different generic MIDI keyboard.
@@ -16,7 +16,8 @@ Exact interface models do not matter: the DAW uses whatever drivers are installe
 
 - Two Windows audio paths from the start: ASIO and WASAPI exclusive mode.
 - Device and buffer settings are stored per machine, never in the project.
-- MIDI records from all connected inputs by default. Nothing binds to a keyboard's name.
+- MIDI records from all connected inputs by default. Nothing binds to a keyboard's name unless
+  the person chooses one for a track (D-044, `track.input`).
 - Audio files sit inside the project folder and are referenced by relative path.
 - Plugins are identified by class ID, not by path.
 - Omnisphere and Keyscape must be installed with the same sound library on every machine.

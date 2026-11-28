@@ -54,6 +54,7 @@ crucible/
     crucible-audio-io/          SEAM 1. AudioBackend trait plus one module per driver API.
     crucible-midi-io/           SEAM 1. MidiBackend trait.
     crucible-plugin-host/       VST3 hosting and scanning. SEAM 2 lives in an editor_window module.
+    crucible-test-synth/        a tiny VST3 instrument for tests (D-044). Never shipped.
     crucible-project/           file format, save, load, autosave, crash journal. Portable.
     crucible-cli/               the `crucible` binary: command-line front end over every command,
                                 plus diagnostics (devices, plugins, report). Shell, scripts, JSON.
@@ -180,6 +181,11 @@ No sends or buses in version 1.
   the audio callback, and its lock-free runner takes the plugin away from the editor. The engine
   must keep the processor side on the audio thread and the editor side on the main thread
   separately. Design this before M2. The M0 spike uses the locking path and accepts the risk.
+- **Built 2026-11-27 (D-044):** the catalog and scan (`catalog.rs`), one plugin in two halves
+  (`instance.rs`: control on the main thread, sound on the audio thread, one lock between them,
+  as vst3-host keeps them), instruments mixed in the device callback (`play.rs`, `Stage`), the
+  device kept open while an instrument is loaded, keyboards through `crucible-midi-io::connect`.
+  The processor and editor split above is still to do; until then the lock's cost is counted.
 - **Crash safety, version 1:** plugins run in-process. A plugin crash can take the app down, so
   the defence is frequent autosave plus the crash journal in the project store. Out-of-process
   hosting is revisited after M3. It costs latency and a great deal of complexity.

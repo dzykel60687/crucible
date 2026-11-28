@@ -33,8 +33,11 @@ use std::sync::Arc;
 /// File format version written by this build. Bump it when a change would confuse an older build.
 /// 1: tracks only. 2: clips and notes (a format-1 file opens with no clips). 3: audio clips
 /// carry their file's length and rate (`frames`, `rate`); an older build would drop them.
-/// 4: tracks carry effects.
-pub const FORMAT: u32 = 4;
+/// 4: tracks carry effects. 5: the project carries where it ends (`end`). 6: instrument tracks
+/// carry their plugin and which keyboards play them (`instrument`, `input`, `input_channel`).
+pub const FORMAT: u32 = 6;
+/// Folder in a project for plugin settings, one file per instrument.
+pub const STATE_DIR: &str = "plugin-state";
 pub const PROJECT_FILE: &str = "project.json";
 pub const JOURNAL_FILE: &str = "journal.log";
 
@@ -63,6 +66,10 @@ pub struct Project {
     pub next_clip_id: u32,
     #[serde(default = "first_id")]
     pub next_effect_id: u32,
+    /// Where the song ends, in ticks, when the person has moved the end past the last sound
+    /// (D-043): playback stops there and a whole-song export runs to it. 0 = at the last sound.
+    #[serde(default)]
+    pub end: i64,
 }
 
 fn first_id() -> u32 {
@@ -143,6 +150,37 @@ pub struct Track {
     /// Insert effects, processed in order before the track's gain and pan.
     #[serde(default)]
     pub effects: Vec<Effect>,
+    /// The plugin that makes an instrument track's sound (D-044). `None`: none chosen yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrument: Option<Instrument>,
+    /// Which MIDI keyboard may play this track: `None` is any of them, else text that the
+    /// keyboard's name contains. A name is the one machine-specific thing a project holds; on a
+    /// machine without that keyboard the track simply hears none until another is chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    /// The MIDI channel the track listens to: 0 is all, else 1 to 16.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub input_channel: u8,
+}
+
+fn is_zero(v: &u8) -> bool {
+    *v == 0
+}
+
+/// A plugin on an instrument track. The class id is the plugin's identity on every machine; the
+/// name, vendor and version are kept so a machine that lacks the plugin can say what is missing.
+/// Never a path: each machine finds the plugin through its own scan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Instrument {
+    pub class_id: String,
+    pub name: String,
+    pub vendor: String,
+    #[serde(default)]
+    pub version: String,
+    /// The plugin's settings as of the last save: a file name in the project's `plugin-state`
+    /// folder. The plugin's own format; Crucible never looks inside.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
 }
 
 /// One insert effect on a track. `kind` names a built-in effect (`crucible-dsp`'s table); values
@@ -190,6 +228,7 @@ impl Default for Project {
             clips: Vec::new(),
             next_clip_id: 1,
             next_effect_id: 1,
+            end: 0,
         }
     }
 }
@@ -199,7 +238,7 @@ impl Project {
     pub fn add_track(&mut self, name: String, kind: TrackKind) -> u32 {
         let id = self.next_track_id;
         self.next_track_id += 1;
-        self.tracks.push(Track { id, name, kind, gain_db: 0.0, pan: 0.0, mute: false, solo: false, effects: Vec::new() });
+        self.tracks.push(Track { id, name, kind, gain_db: 0.0, pan: 0.0, mute: false, solo: false, effects: Vec::new(), instrument: None, input: None, input_channel: 0 });
         id
     }
 
@@ -289,6 +328,17 @@ impl Project {
             if !t.gain_db.is_finite() || !(-1.0..=1.0).contains(&t.pan) {
                 return Err(format!("track {} has an invalid gain or pan", t.id));
             }
+            if t.instrument.is_some() && t.kind != TrackKind::Instrument {
+                return Err(format!("track {} is an audio track but has an instrument", t.id));
+            }
+            if t.input_channel > 16 {
+                return Err(format!("track {} listens to MIDI channel {}, which does not exist", t.id, t.input_channel));
+            }
+            if let Some(f) = t.instrument.as_ref().and_then(|i| i.state.as_ref())
+                && (f.is_empty() || f.contains(['/', '\\', ':']) || f.starts_with('.'))
+            {
+                return Err(format!("track {} keeps its instrument's settings in '{f}', which is not a plain file name", t.id));
+            }
         }
         let mut fx_ids = std::collections::HashSet::new();
         for (t, f) in self.tracks.iter().flat_map(|t| t.effects.iter().map(move |f| (t, f))) {
@@ -348,6 +398,13 @@ pub fn load(path: &Path) -> Result<Project, DawError> {
 /// Save atomically into `folder`, creating it if needed. Refuses a non-empty folder that is not
 /// already a Crucible project, so a typo cannot scatter files into an unrelated folder.
 pub fn save(project: &Project, folder: &Path) -> Result<(), DawError> {
+    check_target(folder)?;
+    write(project, folder)
+}
+
+/// Whether a project may be saved into `folder`: one that does not exist yet, an empty one, or a
+/// Crucible project.
+pub fn check_target(folder: &Path) -> Result<(), DawError> {
     let fail = |why: String| DawError::new(Code::ProjectSaveFailed, format!("{}: {why}", folder.display()));
     if folder.exists() {
         if !folder.is_dir() {
@@ -359,6 +416,12 @@ pub fn save(project: &Project, folder: &Path) -> Result<(), DawError> {
             return Err(fail("the folder already holds other files and is not a Crucible project".into()));
         }
     }
+    Ok(())
+}
+
+/// Write `project.json` atomically into `folder`, creating it if needed. [`check_target`] first.
+pub fn write(project: &Project, folder: &Path) -> Result<(), DawError> {
+    let fail = |why: String| DawError::new(Code::ProjectSaveFailed, format!("{}: {why}", folder.display()));
     std::fs::create_dir_all(folder).map_err(|e| fail(format!("creating the folder: {e}")))?;
     let json = serde_json::to_string_pretty(project).map_err(|e| fail(e.to_string()))?;
     let tmp = folder.join(format!("{PROJECT_FILE}.tmp"));

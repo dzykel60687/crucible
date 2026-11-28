@@ -15,3 +15,11 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 crucible-diagnostics = { workspace = true }
 crucible-engine = { path = "../../crates/crucible-engine" }
+# Only for a scan's child process, which asks one plugin what it is (D-044).
+crucible-plugin-host = { path = "../../crates/crucible-plugin-host" }
+# The system's own folder picker for Browse (D-042). MIT. On Windows it is the Explorer dialog;
+# its default features only add the Linux back ends.
+rfd = "0.18"
+# The main window's native handle, so plugins' windows can float above it (D-044). MIT or
+# Apache-2.0; Tauri already uses it.
+raw-window-handle = "0.6"

@@ -194,9 +194,37 @@ svg { display: block; }
 .insert.filled { background: var(--surface-4); border-color: transparent; color: var(--text); }
 .insert.empty { border-style: dashed; color: var(--text-faint); text-align: center; }
 .insert.filled.off { opacity: 0.45; text-decoration: line-through; }
-.fx-editor .row { min-height: 34px; }
-.fx-editor .fxv { min-width: 96px; text-align: center; cursor: ns-resize; }
-.fx-file { display: flex; align-items: center; gap: 8px; color: var(--text-dim); }
+/* The effect editor: a slider, its value and its range per number; nothing scrolls sideways. */
+.dialog.fx { width: min(640px, calc(100vw - 40px)); }
+.fx-editor { overflow-x: hidden; }
+.fx-editor .row { min-height: 34px; grid-template-columns: 112px minmax(0, 1fr); }
+.fxnum { display: grid; grid-template-columns: minmax(0, 1fr) 72px 132px; align-items: center; gap: 10px; }
+.fxnum input[type="range"] { width: 100%; height: 20px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.fxnum .fxin { height: 28px; padding: 0 8px; text-align: right; font: 500 12px/1 var(--mono); }
+.fxnum small { color: var(--text-faint); font-size: var(--fs-s); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-editor .seg { flex-wrap: wrap; justify-self: start; }
+.fx-editor select.input { width: auto; min-width: 180px; height: 30px; justify-self: start; }
+.fx-file { display: flex; align-items: center; gap: 8px; color: var(--text-dim); min-width: 0; }
+.fx-file > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A path with its Browse button. */
+.pick { display: flex; gap: 8px; min-width: 0; }
+.pick .input { min-width: 0; }
+.pick .btn { flex: none; }
+.tbtn.fx { width: 34px; }
+/* An instrument track's plugin and its keyboard button (D-044). */
+.tinst { margin-left: auto; flex: 0 1 auto; min-width: 0; max-width: 58%; height: 22px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-3); color: var(--text); font: 600 11px/1 var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: border-color var(--t), color var(--t); }
+.tinst:hover { border-color: var(--accent); }
+.tinst.none { color: var(--accent); border-style: dashed; }
+.tinst.open { border-color: var(--accent); }
+.tinst.bad { color: var(--rec); border-color: var(--rec); }
+.tbtn.k { flex: none; display: grid; place-items: center; height: 22px; }
+.tbtn.k svg { width: 14px; height: 14px; }
+.tbtn.k.on { background: var(--accent); color: #fff; }
+.tbtn.k.hit { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
+.inst-pick { display: flex; flex-direction: column; gap: 10px; }
+.inst-pick .plugin-list { max-height: min(46vh, 420px); overflow-y: auto; }
+.inst-pick .sub { color: var(--text-faint); font-size: var(--fs-s); overflow-wrap: anywhere; }
+.tbtn.fx.on { color: var(--accent); }
 .insert:hover { color: var(--text); }
 .pan-knob { justify-self: center; width: 34px; height: 34px; cursor: ns-resize; touch-action: none; }
 .fader-area { display: flex; justify-content: center; gap: 8px; min-height: 0; }

@@ -22,6 +22,8 @@ mod clips;
 mod devices;
 mod fx;
 mod play;
+mod rack;
+mod scratch;
 pub mod trail;
 
 /// Test builds count heap allocations per thread, so a test can prove that code meant for the
@@ -74,6 +76,8 @@ pub(crate) mod alloc_count {
 pub mod command;
 
 pub use command::{Args, Effect, Kind, Reply, Spec, Value};
+pub use crucible_plugin_host::ProbeCommand;
+pub use rack::{MainThread, PluginService, add_folder as add_plugin_folder, scan as scan_plugins};
 use command::{opt, req};
 use crucible_diagnostics::{self as diag, Code, DawError};
 use crucible_project::{self as store, Clip, Content, Journal, Project, TrackKind};
@@ -90,6 +94,8 @@ pub struct Engine {
     project: Project,
     /// Where the project was last saved or opened from. `None` until the first save.
     folder: Option<PathBuf>,
+    /// Until then, the folder its imported audio goes to (D-042). Made on the first import.
+    scratch: Option<scratch::Scratch>,
     /// The project as last saved or opened, to tell whether there are unsaved changes.
     saved: Project,
     undo: Vec<Step>,
@@ -117,6 +123,16 @@ pub struct Engine {
     devices: Option<devices::Devices>,
     /// Sound held in memory (compressed files decoded, other rates converted), by file.
     sources: audio::Sources,
+    /// The audio device, kept open between Stop and Play while an instrument is loaded, so the
+    /// keyboards always sound (D-044). While the song plays, `player` holds it.
+    standby: Option<play::Rig>,
+    /// The instruments: loaded plugins, by track, and the keyboards that play them.
+    rack: rack::Rack,
+}
+
+/// [`Engine::work`] from the two fields, for code that holds another part of the engine mutably.
+pub(crate) fn work_dir<'a>(folder: &'a Option<PathBuf>, scratch: &'a Option<scratch::Scratch>) -> Option<&'a Path> {
+    folder.as_deref().or(scratch.as_ref().map(|s| s.dir.as_path()))
 }
 
 /// Microseconds since 1970: unique per engine, and below 2^53, so JavaScript reads it exactly.
@@ -140,6 +156,7 @@ impl Engine {
         Engine {
             project: Project::default(),
             folder: None,
+            scratch: None,
             saved: Project::default(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -154,7 +171,41 @@ impl Engine {
             stop_note: None,
             devices: None,
             sources: audio::Sources::default(),
+            standby: None,
+            rack: rack::Rack::new(),
         }
+    }
+
+    /// Tell the engine how to run something on the main thread, the one that runs the program's
+    /// windows. Call it from that thread. Plugins are loaded, asked for their settings and shown
+    /// there (VST3 requires it). Without this the engine makes those calls on whatever thread
+    /// runs the command, which is right for a program whose commands run on its main thread.
+    pub fn set_main_thread(&mut self, post: MainThread) {
+        self.rack.set_main_thread(post);
+    }
+
+    /// Tell the engine which window is the program's main one, by its native handle (an `HWND`
+    /// on Windows). Plugins' own windows then float above it instead of standing apart.
+    pub fn set_main_window(&mut self, handle: isize) {
+        self.rack.owner = Some(handle);
+    }
+
+    /// Tell the engine how to start a child process that asks one plugin what it is: a program
+    /// and the arguments that come before the plugin's path. Scanning needs it.
+    pub fn set_probe(&mut self, probe: ProbeCommand) {
+        self.rack.probe = Some(probe);
+    }
+
+    /// For the front end's main thread to call a few times a second, without the engine: it
+    /// keeps the plugins' own windows working.
+    pub fn plugin_service(&self) -> PluginService {
+        self.rack.service()
+    }
+
+    /// The program is closing. Call this before waiting for the engine: a command that is
+    /// waiting for the main thread then gives up instead of waiting for ever.
+    pub fn closing() {
+        rack::closing();
     }
 
     pub fn project(&self) -> &Project {
@@ -165,8 +216,31 @@ impl Engine {
         self.folder.as_deref()
     }
 
+    /// The folder the project's audio is in: where it was saved, or, before the first save, the
+    /// unsaved project's own folder (D-042), if it has needed one yet.
+    pub(crate) fn work(&self) -> Option<&Path> {
+        work_dir(&self.folder, &self.scratch)
+    }
+
+    /// Like [`Engine::work`], making the unsaved project's folder if there is none yet.
+    pub(crate) fn work_folder(&mut self) -> Result<PathBuf, DawError> {
+        if self.work().is_none() {
+            self.scratch = Some(scratch::Scratch::new()?);
+        }
+        Ok(self.work().map(Path::to_path_buf).unwrap_or_default())
+    }
+
+    /// The program is ending: remove the unsaved project's folder, if it has one. A front end
+    /// calls this after stopping playback. A save the person declined is not made here.
+    pub fn close(&mut self) {
+        play::release(self, "the program is closing");
+        self.rack.clear(true);
+        self.scratch = None;
+    }
+
+    /// Unsaved changes: to the project, or to an instrument's settings made in its own window.
     pub fn is_dirty(&self) -> bool {
-        self.project != self.saved
+        self.project != self.saved || self.rack.touched()
     }
 
     /// Everything a front end needs to draw: the model, where it lives, and what undo/redo would
@@ -256,6 +330,10 @@ impl Engine {
                     && let Some(b) = before
                 {
                     self.project = b;
+                    // An instrument that would not load is gone again; what was there is back.
+                    if rack::sync(self) {
+                        play::live_update(self);
+                    }
                 }
                 return Err(e);
             }
@@ -263,6 +341,9 @@ impl Engine {
         if let Some(before) = before {
             self.history.push(line.clone());
             let changed = self.project != before;
+            if changed {
+                audio::release_unused(self, &before);
+            }
             if spec.effect == Effect::Edit && changed {
                 self.undo.push(Step { command: line.clone(), before });
                 if self.undo.len() > UNDO_LIMIT {
@@ -273,8 +354,15 @@ impl Engine {
             if (matches!(spec.effect, Effect::Edit | Effect::History) && changed) || spec.effect == Effect::Clipboard {
                 self.write_journal(&line);
             }
-            // Playback follows every edit (D-034).
-            play::after_command(self, spec.effect == Effect::File, changed);
+            // The plugins follow the project (D-044), and playback follows every edit (D-034).
+            // Only another project stops it: saving or importing during playback used to stop it
+            // too (until 2026-11-26).
+            let file = matches!(spec.name, "project.new" | "project.open");
+            let plugins = rack::sync(self);
+            if file {
+                self.rack.forget();
+            }
+            play::after_command(self, file, changed, plugins);
         }
         Ok(reply)
     }
@@ -327,6 +415,7 @@ impl Engine {
         self.saved = project.clone();
         self.project = project;
         self.folder = folder;
+        self.scratch = None;
         self.undo.clear();
         self.redo.clear();
         self.journal = None;
@@ -375,12 +464,12 @@ impl Engine {
 // ---------------------------------------------------------------- the command table
 
 const KINDS: &[&str] = &["audio", "instrument"];
-const ON_OFF: &[&str] = &["on", "off"];
+pub(crate) const ON_OFF: &[&str] = &["on", "off"];
 const DISCARD: command::Arg = opt("discard", Kind::Bool, "drop unsaved changes instead of refusing");
-const TRACK: command::Arg = req("track", Kind::Track, "name, position (1, 2, ...) or id (#3)");
+pub(crate) const TRACK: command::Arg = req("track", Kind::Track, "name, position (1, 2, ...) or id (#3)");
 
 /// The engine's command table: the rows below plus the clip, note and clipboard rows in clips.rs.
-static ALL_SPECS: LazyLock<Vec<Spec<Engine>>> = LazyLock::new(|| SPECS.iter().chain(clips::SPECS).chain(audio::SPECS).chain(fx::SPECS).chain(play::SPECS).chain(devices::SPECS).chain(trail::SPECS).map(|s| Spec { ..*s }).collect());
+static ALL_SPECS: LazyLock<Vec<Spec<Engine>>> = LazyLock::new(|| SPECS.iter().chain(clips::SPECS).chain(audio::SPECS).chain(fx::SPECS).chain(play::SPECS).chain(rack::SPECS).chain(devices::SPECS).chain(trail::SPECS).map(|s| Spec { ..*s }).collect());
 
 static SPECS: &[Spec<Engine>] = &[
     Spec {
@@ -450,6 +539,13 @@ static SPECS: &[Spec<Engine>] = &[
         help: "Set the project sample rate. Audio at other rates is refused unless --convert is given.",
         effect: Effect::Edit,
         run: project_rate,
+    },
+    Spec {
+        name: "project.end",
+        args: &[req("beat", Kind::Number, "where the song ends, in beats; 0 = at the last sound")],
+        help: "Move the song's end past the last sound: playback stops there and exports run to it.",
+        effect: Effect::Edit,
+        run: project_end,
     },
     Spec {
         name: "master.gain",
@@ -601,18 +697,68 @@ fn project_save(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
             DawError::new(Code::BadArgument, "this project has never been saved; give a folder: project.save <folder>")
         })?,
     };
+    store::check_target(&target)?;
+    // Saving somewhere new (the first save, or Save as) takes the audio along. Before 2026-11-26
+    // Save as wrote only project.json, and the copy opened with every clip missing.
+    let mut copied = String::new();
+    if let Some(from) = e.work().map(Path::to_path_buf).filter(|f| !same_folder(f, &target)) {
+        let (files, bytes) = audio::copy_audio(&from, &target)?;
+        e.sources.moved(&from, &target);
+        let old: Vec<PathBuf> = e.peaks.keys().filter(|p| p.starts_with(&from)).cloned().collect();
+        for p in old {
+            if let (Some(v), Ok(rel)) = (e.peaks.remove(&p), p.strip_prefix(&from)) {
+                e.peaks.insert(target.join(rel), v);
+            }
+        }
+        if files > 0 {
+            copied = format!(" ({files} audio file{} copied, {:.1} MB)", if files == 1 { "" } else { "s" }, bytes as f64 / 1_048_576.0);
+        }
+    }
     // A new project takes the folder's name, so files and titles agree.
     if e.project.name == "Untitled"
         && let Some(n) = target.file_name()
     {
         e.project.name = n.to_string_lossy().into_owned();
     }
-    store::save(&e.project, &target)?;
+    // Each instrument's settings go into the project's folder, and the project notes the file.
+    let from = e.work().map(Path::to_path_buf);
+    let problems = rack::save_states(e, &target, from.as_deref());
+    store::write(&e.project, &target)?;
     store::clear_journal(&target)?;
     e.journal = Some(Journal::open(&target)?);
     e.saved = e.project.clone();
     e.folder = Some(target.clone());
-    Ok(Reply::new(format!("Saved '{}' to {}", e.project.name, target.display()), json!({ "name": e.project.name, "folder": target })))
+    // The unsaved project's folder is no longer needed. Playback may still be reading from it;
+    // then it goes when the project is replaced or the program closes.
+    if e.player.is_none() {
+        e.scratch = None;
+    }
+    let mut text = format!("Saved '{}' to {}{copied}", e.project.name, target.display());
+    for p in &problems {
+        text.push_str(&format!("\nE4007: {p}"));
+    }
+    Ok(Reply::new(text, json!({ "name": e.project.name, "folder": target, "problems": problems })))
+}
+
+/// Whether two paths name the same folder. A folder that does not exist yet is never the same.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// D-043. The end is only ever further out than the last clip: nearer than that means "at the
+/// last sound", which is also where it goes back to when clips later reach past it.
+fn project_end(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
+    let t = clips::ticks(a.need_number("beat")?.max(0.0))?;
+    let last = e.project.clips.iter().map(|c| c.start + c.length).max().unwrap_or(0);
+    e.project.end = if t > last { t } else { 0 };
+    let text = match e.project.end {
+        0 => "The song ends at its last sound".to_string(),
+        t => format!("The song now ends at beat {:.2}", clips::beats(t)),
+    };
+    Ok(Reply::new(text, json!({ "end": clips::beats(e.project.end) })))
 }
 
 fn project_info(e: &mut Engine, _: &Args) -> Result<Reply, DawError> {

@@ -50,28 +50,113 @@ export function dialog(title: string, html: string, opts: { wide?: boolean; foot
 
 
 // ------------------------------------------------------------------ open / save
-export function pathPrompt(mode: 'open' | 'save' | 'new') {
-  const titles = { open: 'Open project', save: 'Save project as', new: 'New project' }
-  const d = dialog(titles[mode], `<div class="content">
-      ${mode === 'new'
-        ? `<label class="row"><span>Name</span><input class="input" value="Untitled"></label>`
-        : `<label class="row"><span>Project folder</span><input class="input" spellcheck="false" placeholder="C:\\Music\\My Song" value="${esc(state.folder ?? '')}"></label>
-           <div class="row"><span></span><div class="sub">A project is a folder holding project.json and its audio. A folder picker comes with the file-dialog plugin.</div></div>`}
-      ${mode === 'open' && state.dirty ? `<label class="row"><span>Unsaved changes</span><span><button class="switch" data-discard></button> <small style="color:var(--text-faint);margin-left:8px">discard them</small></span></label>` : ''}
-    </div>`, { footer: `<button class="btn" data-close>Cancel</button><button class="btn primary" data-go>${mode === 'open' ? 'Open' : mode === 'new' ? 'Create' : 'Save'}</button>` })
+// Like most programs (D-042): work first, choose where to save later. Nothing asks for a folder
+// until Save; New, Open and closing the window ask Save, Don't save or Cancel when there are
+// unsaved changes; every folder and file is chosen with the system's own picker (Browse).
+
+/** The system's folder picker (Explorer's on Windows). Null if the person cancelled. */
+export async function pickFolder(title: string, start?: string | null): Promise<string | null> {
+  const [r] = await run(`ui.pick_folder --title ${q(title)}${start ? ` --start ${q(start)}` : ''}`, { quiet: true })
+  return (r?.ok && r.data?.folder) || null
+}
+/** The system's file picker, showing audio files. Empty if the person cancelled. */
+export async function pickFiles(title: string): Promise<string[]> {
+  const [r] = await run(`ui.pick_files --title ${q(title)}`, { quiet: true })
+  return r?.ok && Array.isArray(r.data?.files) ? r.data.files : []
+}
+
+const PLACE = 'crucible.place'
+/** The folder projects were last saved in or opened from, remembered on this computer. */
+const lastPlace = () => { try { return localStorage.getItem(PLACE) ?? '' } catch { return '' } }
+const rememberPlace = (p: string) => { try { localStorage.setItem(PLACE, p) } catch { /* private mode: not remembered */ } }
+const trimSlash = (p: string) => (/^[A-Za-z]:[\\/]?$|^[\\/]+$/.test(p) ? p : p.replace(/[\\/]+$/, ''))
+const parentOf = (p: string) => trimSlash(trimSlash(p).replace(/[^\\/]*$/, ''))
+const joinPath = (dir: string, name: string) => (/[\\/]$/.test(dir) ? dir : dir + (dir.includes('/') && !dir.includes('\\') ? '/' : '\\')) + name
+const unquote = (v: string) => v.trim().replace(/^"(.*)"$/, '$1')
+
+/** Save the project somewhere new: a name, and the folder to put it in. Resolves true once saved. */
+export function saveAs(): Promise<boolean> {
+  return new Promise((resolve) => {
+    let saved = false
+    const name0 = /^(Untitled|…)$/.test(state.project.name) ? 'My Song' : state.project.name
+    const d = dialog('Save project as', `<div class="content">
+        <label class="row"><span>Name</span><input class="input" data-name spellcheck="false" value="${esc(name0)}"></label>
+        <div class="row"><span>Save in</span><div class="pick"><input class="input" data-in spellcheck="false" placeholder="Choose a folder with Browse" value="${esc(state.folder ? parentOf(state.folder) : lastPlace())}"><button class="btn solid" data-browse>Browse…</button></div></div>
+        <div class="row"><span></span><div class="sub" data-where></div></div>
+      </div>`, { footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" data-go>Save</button>' })
+    const name = d.querySelector<HTMLInputElement>('[data-name]')!, place = d.querySelector<HTMLInputElement>('[data-in]')!, where = d.querySelector<HTMLElement>('[data-where]')!
+    const target = () => (name.value.trim() && place.value.trim() ? joinPath(unquote(place.value), name.value.trim()) : '')
+    const show = () => { where.textContent = target() ? `Makes the folder ${target()} with the project and its audio in it.` : 'A project is a folder holding the project and its audio.' }
+    show()
+    name.oninput = place.oninput = show
+    name.focus(); name.select()
+    const browse = async () => {
+      const f = await pickFolder('Save the project in', unquote(place.value) || null)
+      if (f) { place.value = f; show() }
+    }
+    d.querySelector<HTMLButtonElement>('[data-browse]')!.onclick = browse
+    const go = async () => {
+      // No folder chosen yet: Save opens the picker, as a person expects.
+      if (name.value.trim() && !place.value.trim()) await browse()
+      const to = target()
+      if (!to) return (name.value.trim() ? place : name).focus()
+      if (!/^([A-Za-z]:[\\/]|\\\\|\/)/.test(to)) { place.focus(); return toast('error', 'Choose the folder with Browse', 'Or type its full path, for example C:\\Music.') }
+      const r = await run(`project.save ${q(to)}`)
+      if (!r.every((x) => x.ok)) return
+      if (state.project.name !== name.value.trim()) await run(`project.rename ${q(name.value.trim())}; project.save`, { quiet: true })
+      rememberPlace(parentOf(to))
+      saved = true
+      closeLayer()
+      toast('info', r.at(-1)?.text?.split('\n')[0] ?? 'Saved')
+    }
+    d.querySelector<HTMLButtonElement>('[data-go]')!.onclick = go
+    for (const el of [name, place]) el.onkeydown = (e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape') closeLayer(); e.stopPropagation() }
+    new MutationObserver((_, o) => { if (!d.isConnected) { o.disconnect(); resolve(saved) } }).observe(layer, { childList: true })
+  })
+}
+
+/** Save (Ctrl+S): straight to the project's folder, or ask where the first time. */
+export async function save(): Promise<boolean> {
+  return state.folder ? !!(await run('project.save'))[0]?.ok : saveAs()
+}
+
+/** Before the project is replaced or the window closes: with unsaved changes, ask Save, Don't
+ *  save or Cancel. True when it is fine to go on. */
+export async function confirmUnsaved(): Promise<boolean> {
+  if (!state.dirty) return true
+  const a = await choose(`Save changes to ${state.project.name}?`,
+    `<p style="margin:0;color:var(--text-dim)">${state.folder ? `In ${esc(state.folder)}.` : 'This project has not been saved yet.'} Changes that are not saved are lost.</p>`,
+    [['save', 'Save'], ['discard', 'Don’t save']])
+  if (a === 'save') return save()
+  return a === 'discard'
+}
+
+export async function newProject() {
+  if (!(await confirmUnsaved())) return
+  const r = await run('project.new --discard')
+  if (r.every((x) => x.ok)) selectClips([])
+}
+
+export async function openProject() {
+  if (!(await confirmUnsaved())) return
+  const d = dialog('Open project', `<div class="content">
+      <div class="row"><span>Project folder</span><div class="pick"><input class="input" spellcheck="false" placeholder="Choose a project folder with Browse" value=""><button class="btn solid" data-browse>Browse…</button></div></div>
+      <div class="row"><span></span><div class="sub">A project is a folder holding the project and its audio.</div></div>
+    </div>`, { footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" data-go>Open</button>' })
   const input = d.querySelector('input')!
-  input.focus(); input.select()
-  const discard = d.querySelector<HTMLButtonElement>('[data-discard]')
-  if (discard) discard.onclick = () => discard.classList.toggle('on')
+  input.focus()
   const go = async () => {
-    const v = input.value.trim()
+    const v = unquote(input.value)
     if (!v) return
-    const cmd = mode === 'new' ? `project.new ${q(v)}` : mode === 'open' ? `project.open ${q(v)}${discard?.classList.contains('on') ? ' --discard' : ''}` : `project.save ${q(v)}`
-    const r = await run(cmd)
-    if (r.every((x) => x.ok)) { closeLayer(); if (mode !== 'save') selectClips([]); toast('info', r.at(-1)?.text?.split('\n')[0] ?? 'Done') }
+    const r = await run(`project.open ${q(v)} --discard`)
+    if (r.every((x) => x.ok)) { rememberPlace(parentOf(v.replace(/[\\/]project\.json$/i, ''))); closeLayer(); selectClips([]); toast('info', r.at(-1)?.text?.split('\n')[0] ?? 'Opened') }
+  }
+  d.querySelector<HTMLButtonElement>('[data-browse]')!.onclick = async () => {
+    const f = await pickFolder('Open a project folder', (state.folder ? parentOf(state.folder) : lastPlace()) || null)
+    if (f) { input.value = f; await go() }
   }
   d.querySelector<HTMLButtonElement>('[data-go]')!.onclick = go
-  input.onkeydown = (e) => { if (e.key === 'Enter') go(); e.stopPropagation() }
+  input.onkeydown = (e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape') closeLayer(); e.stopPropagation() }
 }
 
 /** One text field, OK and Cancel. Calls done with the trimmed value if it changed. */
@@ -148,7 +233,7 @@ export function openExport() {
       <div class="row"><span>Range</span><div class="seg" data-g="range"><button data-v="song" class="on">Whole song</button><button data-v="selection" ${ranges.selection ? '' : 'disabled title="No clips selected"'}>Selection</button></div></div>
       <div class="row"><span>Dither</span><label style="color:var(--text-dim)" data-dither>Off: 24-bit needs none</label></div>
       <div class="row"><span>File</span><input class="input" value="${esc(file)}" placeholder="full path, e.g. C:\\Music\\Song.wav" spellcheck="false"></div>
-      <div class="row"><span></span><span style="color:var(--text-faint);font-size:var(--fs-s)">Audio clips only: MIDI is silent until instruments are hosted. Nothing is normalised or limited.</span></div>
+      <div class="row"><span></span><span style="color:var(--text-faint);font-size:var(--fs-s)">Audio clips, and notes on tracks whose instrument is loaded. Nothing is normalised or limited.</span></div>
     </div>`, { footer: `<span class="note">Lossless and untouched by default.</span><button class="btn" data-close>Cancel</button><button class="btn primary" data-go>${icon.export} Export</button>` })
   const pick = (g: string) => d.querySelector<HTMLElement>(`[data-g="${g}"] .on`)!.dataset.v!
   let dither = true
@@ -187,7 +272,7 @@ export const SHORTCUTS: [string, string][] = [
   ['Delete clips (or note)', 'Del'], ['Select all clips', 'Ctrl+A'], ['Nudge clips by grid / bar', '← → / Shift'],
   ['Move clips: drag · copy: Ctrl+drag', 'mouse'], ['Trim: drag a clip edge · no snap: Alt', 'mouse'],
   ['Import audio (or drop files on the window)', 'Ctrl+I'], ['Add track', 'Ctrl+T'], ['Rename track', 'F2'], ['Mute / solo track', 'M / S'], ['Remove track', 'Ctrl+Del'],
-  ['Select track above / below', '↑ / ↓'], ['Zoom in / out', '+ / − or Ctrl+wheel'], ['Mixer / piano roll / clip / console', '1 / 2 / 3 / `'],
+  ['Select track above / below', '↑ / ↓'], ['Zoom in / out', '+ / − or Ctrl+wheel'], ['Move through time', 'wheel · Shift+wheel'], ['Drag the view', 'Ctrl+drag empty space · middle button'], ['Mixer / piano roll / clip / console', '1 / 2 / 3 / `'],
   ['Show / hide panel', 'B'], ['Next layout', 'Ctrl+Shift+L'], ['Mark this moment in the log', 'F9'],
 ]
 
@@ -240,7 +325,7 @@ function sectionHtml(s: string): string {
       <div class="row"><span></span><div class="sub" data-report>One text file on the Desktop: this machine's audio check and the recent logs, with everything done in this window. Send that file. It holds no audio.</div></div>
       <h3>The log</h3>
       <div class="row"><span>File</span><span data-logpath style="color:var(--text-dim);user-select:text;font-family:var(--mono);font-size:12px;overflow-wrap:anywhere">…</span></div>
-      <div class="row"><span></span><div class="sub">One file beside the program, written as things happen and started afresh every time Crucible starts. The run before is kept once, as <code>.previous.log</code>, so a crash can still be read after a restart. It holds every command and its result, clicks and keys in this window (never what you type into a field), playback health and every dropout, errors and crashes. Nothing is sent anywhere by itself.</div></div>
+      <div class="row"><span></span><div class="sub">One file, in the <code>logs</code> folder where Crucible is installed, written as things happen and started afresh every time Crucible starts. The run before is kept once, as <code>.previous.log</code>, so a crash can still be read after a restart. It holds every command and its result, clicks and keys in this window (never what you type into a field), playback health and every dropout, errors and crashes. Nothing is sent anywhere by itself.</div></div>
       <div class="row"><span>Error codes</span><span style="color:var(--text-dim)">Every failure shows a code like E2004 with what to try.</span></div>`
   }
   return ''

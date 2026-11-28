@@ -10,7 +10,12 @@
 //! Portability: only `plugin_paths` (and later `editor_window` and `module_loader`) may
 //! contain OS-specific code. See docs/03-platform-notes.md.
 
+pub mod catalog;
+pub mod editor_window;
+pub mod instance;
 pub mod plugin_paths;
+
+pub use instance::{Instance, Loaded, Midi, Processor};
 
 use serde::{Deserialize, Serialize};
 use std::io::Read;
@@ -292,6 +297,102 @@ pub fn run_probe_child(bundle: &Path) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The test instrument, laid out as a bundle in a temp folder of this test's own.
+    fn test_bundle(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("crucible-host-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crucible_test_synth::bundle_into(&dir).expect("the test plugin")
+    }
+
+    fn rms(x: &[f32]) -> f64 {
+        (x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / x.len().max(1) as f64).sqrt()
+    }
+
+    /// The whole path a real plugin takes, on the test instrument: found on disk, described by
+    /// the probe, loaded, played, its settings read and restored, the sustain pedal reaching it
+    /// as a parameter (VST3 has no controller events), and taken down again.
+    #[test]
+    fn a_plugin_is_found_loaded_played_and_remembers_its_settings() {
+        let bundle = test_bundle("play");
+        let (_, found) = find_bundles(&[bundle.parent().unwrap().to_path_buf()]);
+        assert_eq!(found, vec![bundle.clone()]);
+        let ProbeOutcome::Ok(summary) = probe_in_process(&bundle) else { panic!("the probe failed: {:?}", probe_in_process(&bundle)) };
+        assert_eq!((summary.name.as_str(), summary.vendor.as_str()), (crucible_test_synth::NAME, crucible_test_synth::VENDOR));
+        assert!(summary.is_instrument && summary.has_midi_input && summary.has_editor, "{summary:?}");
+
+        let inst = Instance::load(&bundle, Some(&summary.class_id), 48_000, 512).expect("load");
+        assert_eq!(inst.info().class_id, summary.class_id);
+        let mut p = inst.processor();
+        let (mut l, mut r) = (vec![9.0f32; 480], vec![9.0f32; 480]);
+        assert!(p.process(&[], &mut l, &mut r, false));
+        assert!(l.iter().chain(&r).all(|x| *x == 0.0), "silence before any note");
+
+        // A at 440 Hz, full velocity, starting 100 samples into the block.
+        assert!(p.process(&[Midi::note_on(100, 0, 69, 127)], &mut l, &mut r, false));
+        assert!(l[..100].iter().all(|x| *x == 0.0) && l[100] == 0.0 && l[101] > 0.0, "the note starts on its sample");
+        let want = 0.25 / 2f64.sqrt();
+        assert!((rms(&l[100..]) - want).abs() < 0.01, "level {} vs {want}", rms(&l[100..]));
+        assert_eq!(l, r);
+
+        // A block larger than the plugin was told to expect is fed in pieces.
+        let (mut bl, mut br) = (vec![0.0f32; 2000], vec![0.0f32; 2000]);
+        assert!(p.process(&[], &mut bl, &mut br, false));
+        assert!((rms(&bl) - want).abs() < 0.01);
+
+        // The pedal goes down, the key comes up: the note holds. Pedal up: silence.
+        assert!(p.process(&[Midi { offset: 0, status: 0xB0, a: 64, b: 127 }, Midi::note_off(10, 0, 69)], &mut l, &mut r, false));
+        assert!(p.process(&[], &mut l, &mut r, false));
+        assert!(rms(&l) > 0.1, "the sustain pedal did not reach the plugin");
+        assert!(p.process(&[Midi { offset: 0, status: 0xB0, a: 64, b: 0 }], &mut l, &mut r, false));
+        assert!(p.process(&[], &mut l, &mut r, false));
+        assert_eq!(rms(&l), 0.0, "the note outlived the pedal");
+
+        // Settings: 8 bytes holding the level. Half level in, half as loud out.
+        let state = inst.state().expect("state");
+        assert!(state.windows(8).any(|w| w == 1.0f64.to_le_bytes()), "the level is not in the saved settings");
+        let half: Vec<u8> = { let i = state.windows(8).position(|w| w == 1.0f64.to_le_bytes()).unwrap(); let mut s = state.clone(); s[i..i + 8].copy_from_slice(&0.5f64.to_le_bytes()); s };
+        inst.set_state(&half).expect("set state");
+        assert!(p.process(&[Midi::note_on(0, 0, 69, 127)], &mut l, &mut r, false));
+        assert!((rms(&l) - want / 2.0).abs() < 0.01, "level after restoring settings: {}", rms(&l));
+        assert_eq!(inst.state().unwrap(), half);
+
+        // The control side holds the plugin (as opening its window does) while a key is pressed:
+        // that block is silence, but the key is not lost. It sounds in the next block.
+        {
+            let held = inst.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let holder = std::thread::spawn(move || held.hold_for_test(Duration::from_millis(60), tx));
+            rx.recv().unwrap();
+            assert!(!p.process(&[Midi::note_off(0, 0, 69), Midi::note_on(5, 0, 72, 127)], &mut l, &mut r, false), "the block was not given up");
+            assert_eq!(rms(&l), 0.0);
+            holder.join().unwrap();
+            assert!(p.process(&[], &mut l, &mut r, false));
+            assert!((rms(&l) - want / 2.0).abs() < 0.01, "the key pressed while the plugin was busy did not sound: {}", rms(&l));
+            assert!(p.process(&[Midi::note_off(0, 0, 72)], &mut l, &mut r, false));
+            assert!(p.process(&[], &mut l, &mut r, false));
+            assert_eq!(rms(&l), 0.0, "a note was left sounding");
+            assert!(p.process(&[Midi::note_on(0, 0, 69, 127)], &mut l, &mut r, false));
+        }
+
+        // Offline and back: still plays, in the bigger blocks an export uses.
+        inst.set_offline(true, 4096, 48_000).expect("offline");
+        let mut off = inst.processor();
+        let (mut ol, mut or) = (vec![0.0f32; 4096], vec![0.0f32; 4096]);
+        assert!(off.process(&[Midi::note_on(0, 0, 60, 100)], &mut ol, &mut or, true));
+        assert!(rms(&ol) > 0.05);
+        inst.set_offline(false, 512, 48_000).expect("back to live");
+
+        // The audio half never allocates once it is running.
+        assert!(p.process(&[], &mut l, &mut r, false));
+
+        inst.unload();
+        assert!(!p.process(&[Midi::note_on(0, 0, 60, 100)], &mut l, &mut r, false));
+        assert!(l.iter().all(|x| *x == 0.0), "an unloaded plugin made sound");
+        drop((p, off));
+        instance::bury();
+        let _ = std::fs::remove_dir_all(bundle.parent().unwrap());
+    }
 
     #[test]
     fn finds_bundles_and_ignores_other_files() {

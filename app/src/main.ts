@@ -1,13 +1,14 @@
 // Crucible's window: top bar, track headers, timeline, bottom panel. Views draw from `state`
 // (the engine's truth) and change it only through `run(command)`.
-import { askConvert, closeLayer, layerOpen, markPrompt, menu, openExport, openSettings, pathPrompt, textPrompt, type Item } from './dialogs'
+import { askConvert, closeLayer, confirmUnsaved, layerOpen, markPrompt, menu, newProject, openExport, openProject, openSettings, pickFiles, save, saveAs, textPrompt, type Item } from './dialogs'
 import { chosenOutput, watchDevices } from './devices'
-import { beats, ids, inTauri, PPQ, q, transportName, type Clip } from './engine'
+import { beats, ids, inTauri, PPQ, q, transportName, type Clip, type Track } from './engine'
 import { icon } from './icons'
-import { loadKinds } from './effects'
+import { fxLabel, loadKinds, openEffectEditor, openEffectPicker } from './effects'
+import { inst, instButton, instMenu, keyButton, openInstrumentPicker, toggleLive, watchInstruments } from './instruments'
 import { cycleLayout, loadLayout } from './layout'
 import { deleteSelectedNote, drawMeters, renderPanel, renderTabs, selectTab, setCommandNames } from './panels'
-import { bpb, changed, clip, created, dbToPos, dragNumber, esc, flush, fmtDb, fmtPan, onChange, owe, pointerHeld, posToDb, redraw, run, selectClips, state, toast, toggleMute, toggleSolo, track, ui, view } from './store'
+import { bpb, changed, clip, created, dbToPos, dragNumber, esc, flush, fmtDb, onChange, owe, pointerHeld, posToDb, redraw, run, selectClips, state, toast, toggleMute, toggleSolo, track, ui, view } from './store'
 import { advance, device, settling, togglePlay as transportToggle, tp } from './transport'
 import { clampScroll, draw, dropTarget, follow, hooks, pasteTarget, rowH, trackColor, zoom } from './timeline'
 import { frameDrawn, startTrail } from './trail'
@@ -32,7 +33,7 @@ top.innerHTML = `
   <span class="sep"></span>
   <div class="field edit" id="f-tempo" title="Tempo: drag, or click to type"><span class="k">Tempo</span><span class="v"></span></div>
   <div class="field edit" id="f-sig" title="Time signature: click to change"><span class="k">Time sig</span><span class="v"></span></div>
-  <div class="field position" title="Position: bar.beat.sixteenth and time"><span class="k">Position</span><span class="v"></span></div>
+  <div class="field position" title="Position: minutes and seconds"><span class="k">Position</span><span class="v"></span></div>
   <span class="spacer"></span>
   <div class="safety">
     <div class="field headroom" title="Highest peak since play started. Click to reset."><span class="k">Peak</span><span class="v" style="display:flex;align-items:center;gap:8px"><span id="peak"></span><span class="clip-light" id="clip"></span></span></div>
@@ -72,11 +73,11 @@ function updateTop() {
 
 /** The parts of the top bar that move while playing. */
 function updateReadouts() {
-  const per = bpb(), b = tp.pos
-  const bar = Math.floor(b / per) + 1, beat = Math.floor(b % per) + 1, six = Math.floor((b % 1) * 4) + 1
-  const secs = b * 60 / state.project.tempo_bpm
-  const mm = Math.floor(secs / 60), ss = (secs % 60).toFixed(3).padStart(6, '0')
-  el.pos.innerHTML = `${bar}.${beat}.${six}<small>${mm}:${ss}</small>`
+  // Minutes, seconds and tenths, nothing else (asked for 2026-11-26; it showed bar.beat.sixteenth
+  // first, which means little for a song that was not made to a click).
+  const tenths = Math.floor(tp.pos * 600 / state.project.tempo_bpm + 1e-6)
+  const pos = `${Math.floor(tenths / 600)}:${String(Math.floor(tenths / 10) % 60).padStart(2, '0')}.${tenths % 10}`
+  if (el.pos.textContent !== pos) el.pos.textContent = pos
   el.peak.textContent = Number.isFinite(tp.peakDb) ? `${tp.peakDb.toFixed(1)}` : '—'
   el.clip.classList.toggle('hot', tp.clipped)
   const drops = tp.dropouts ? `${tp.dropouts} dropout${tp.dropouts === 1 ? '' : 's'}` : ''
@@ -90,11 +91,12 @@ el.proj.onclick = () => {
 }
 function projectMenu(at: { x: number; y: number }) {
   const items: Item[] = [
-    { label: 'New project…', kbd: 'Ctrl+N', action: () => pathPrompt('new') },
-    { label: 'Open…', kbd: 'Ctrl+O', action: () => pathPrompt('open') },
+    { label: 'New project', kbd: 'Ctrl+N', action: newProject },
+    { label: 'Open…', kbd: 'Ctrl+O', action: openProject },
     'sep',
     { label: 'Save', kbd: 'Ctrl+S', action: save, disabled: !state.dirty && !!state.folder },
-    { label: 'Save as…', kbd: 'Ctrl+Shift+S', action: () => pathPrompt('save') },
+    { label: 'Save as…', kbd: 'Ctrl+Shift+S', action: saveAs },
+    { label: 'Import audio…', kbd: 'Ctrl+I', action: () => { const t = pasteTarget(); importPick(t.track, t.at) } },
     { label: 'Export…', kbd: 'Ctrl+Shift+E', action: openExport },
     'sep',
     { label: 'Undo', small: state.undo ?? 'nothing', action: () => run('undo'), disabled: !state.undo },
@@ -106,7 +108,23 @@ function projectMenu(at: { x: number; y: number }) {
   ]
   menu(at, items)
 }
-function save() { if (state.folder) run('project.save'); else pathPrompt('save') }
+
+// Closing the window with unsaved changes asks first (D-042). Before 2026-11-26 it just closed.
+if (inTauri) {
+  import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+    const w = getCurrentWindow()
+    let asking = false
+    w.onCloseRequested(async (ev) => {
+      if (!state.dirty) return
+      ev.preventDefault()
+      if (asking) return
+      asking = true
+      const go = await confirmUnsaved()
+      asking = false
+      if (go) await w.destroy()
+    })
+  })
+}
 
 $('#t-start').onclick = () => { tp.pos = 0; changed() }
 el.play.onclick = togglePlay
@@ -165,13 +183,13 @@ function renderHeaders() {
     <div class="track ${t.id === ui.selTrack ? 'sel' : ''}" data-id="${t.id}" style="--c:${trackColor(t.id)}">
       <div class="color"></div>
       <div class="body">
-        <div class="row1"><span class="kind" title="${t.kind === 'audio' ? 'Audio track' : 'Instrument track: notes only until instruments are hosted'}">${t.kind === 'audio' ? icon.wave : icon.keys}</span><span class="tname">${esc(t.name)}</span></div>
+        <div class="row1"><span class="kind" title="${t.kind === 'audio' ? 'Audio track' : 'Instrument track'}">${t.kind === 'audio' ? icon.wave : icon.keys}</span><span class="tname">${esc(t.name)}</span>${t.kind === 'instrument' ? instHtml(t) : ''}</div>
         <div class="row2">
           <button class="tbtn m ${t.mute ? 'on' : ''}" title="Mute (M)">M</button>
           <button class="tbtn s ${t.solo ? 'on' : ''}" title="Solo (S)">S</button>
           <div class="hfader" title="Volume: drag, Shift for fine, double-click for 0 dB" style="--p:${dbToPos(t.gain_db)}"><div class="rail"></div><div class="fill"></div><div class="thumb"></div></div>
           <span class="knob-num gain" title="Volume: drag, Shift for fine, double-click for 0 dB">${fmtDb(t.gain_db)} dB</span>
-          <span class="knob-num pan" title="Pan: drag, double-click to centre">${fmtPan(t.pan)}</span>
+          <button class="tbtn fx ${t.effects.length ? 'on' : ''}" title="${t.effects.length ? `Effects: ${t.effects.map(fxLabel).join(', ')}` : 'Add an effect'}">FX</button>
         </div>
       </div>
     </div>`).join('') + `<div class="add-track"><button class="btn" data-add="audio">${icon.plus} Audio</button><button class="btn" data-add="instrument">${icon.plus} Instrument</button></div>`
@@ -184,7 +202,13 @@ function renderHeaders() {
     $('.tname', row).ondblclick = () => rename(t)
     $('.m', row).onclick = (e) => { e.stopPropagation(); toggleMute(id) }
     $('.s', row).onclick = (e) => { e.stopPropagation(); toggleSolo(id) }
-    const g = $('.gain', row), p = $('.pan', row), hf = $('.hfader', row)
+    // An instrument track: its plugin, and whether the keyboards play it (D-044).
+    const ib = row.querySelector<HTMLElement>('.tinst'), kb = row.querySelector<HTMLElement>('.tbtn.k')
+    if (ib) ib.onclick = (e) => { e.stopPropagation(); const r = ib.getBoundingClientRect(); instMenu(t, { x: r.left, y: r.bottom + 4 }) }
+    if (kb) kb.onclick = (e) => { e.stopPropagation(); toggleLive(t, e.ctrlKey || e.shiftKey) }
+    // Effects from the track itself (asked for 2026-11-26); pan is on the mixer strip.
+    $('.fx', row).onclick = (e) => { e.stopPropagation(); const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); fxMenu(id, { x: r.left, y: r.bottom + 4 }) }
+    const g = $('.gain', row), hf = $('.hfader', row)
     // The slider is the mixer's fader lying down: the same travel, the same command.
     hf.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return
@@ -205,18 +229,26 @@ function renderHeaders() {
     })
     hf.addEventListener('dblclick', (e) => { e.stopPropagation(); run(`track.gain #${id} 0`) })
     dragNumber(g, () => t.gain_db, { min: -60, max: 24, perPx: 0.25, step: 0.1, reset: 0, preview: (v) => (g.textContent = `${fmtDb(v)} dB`), commit: (v) => run(`track.gain #${id} ${+v.toFixed(1)}`) })
-    dragNumber(p, () => t.pan * 100, { min: -100, max: 100, perPx: 1, step: 1, reset: 0, preview: (v) => (p.textContent = fmtPan(v / 100)), commit: (v) => run(`track.pan #${id} ${Math.round(v)}`) })
   })
   rows.querySelectorAll<HTMLButtonElement>('[data-add]').forEach((b) => (b.onclick = () => addTrack(b.dataset.add as 'audio' | 'instrument')))
 }
 
-function trackMenu(t: { id: number; name: string }, at: { x: number; y: number }) {
+/** The instrument and keyboard buttons of an instrument track's header. */
+function instHtml(t: Track): string {
+  const b = instButton(t), k = keyButton(t)
+  return `<button class="tinst ${b.cls}" title="${esc(b.title)}">${esc(b.label)}</button>`
+    + (t.instrument ? `<button class="tbtn k ${k.on ? 'on' : ''} ${k.on && inst.hit ? 'hit' : ''}" title="${esc(k.title)}">${icon.keys}</button>` : '')
+}
+
+function trackMenu(t: Track, at: { x: number; y: number }) {
   const i = state.project.tracks.findIndex((x) => x.id === t.id), n = state.project.tracks.length
   menu(at, [
     { label: 'Rename', kbd: 'F2', action: () => rename(t) },
     { label: 'Move up', action: () => run(`track.move #${t.id} ${i}`), disabled: i === 0 },
     { label: 'Move down', action: () => run(`track.move #${t.id} ${i + 2}`), disabled: i === n - 1 },
-    { label: 'Import audio file at playhead…', kbd: 'Ctrl+I', action: () => importPrompt(t.id, pasteTarget().at) },
+    { label: 'Import audio at playhead…', kbd: 'Ctrl+I', action: () => importPick(t.id, pasteTarget().at) },
+    ...(t.kind === 'instrument' ? [{ label: t.instrument ? `Instrument: ${t.instrument.name}…` : 'Choose instrument…', action: () => instMenu(t, at) } as Item] : []),
+    { label: 'Effects…', action: () => fxMenu(t.id, at) },
     'sep',
     { label: 'Remove track', kbd: 'Ctrl+Del', danger: true, action: () => run(`track.remove #${t.id}`) },
   ])
@@ -235,6 +267,8 @@ async function addTrack(kind: 'audio' | 'instrument') {
   if (r[0]?.ok) {
     const t = state.project.tracks.at(-1)
     if (t) { ui.selTrack = t.id; ensureVisible(t.id); changed() }
+    // An instrument track is no use without an instrument: ask for it straight away.
+    if (t && kind === 'instrument') void openInstrumentPicker(t)
   }
 }
 
@@ -309,7 +343,7 @@ hooks.emptyMenu = (trackId, at, pos) => {
   const t = track(trackId)
   menu(pos, [
     { label: 'Paste here', kbd: 'Ctrl+V', action: () => pasteClips(trackId, at) },
-    { label: 'Import audio file here…', kbd: 'Ctrl+I', action: () => importPrompt(trackId, at) },
+    { label: 'Import audio here…', kbd: 'Ctrl+I', action: () => importPick(trackId, at) },
     ...(t?.kind === 'instrument' ? [{ label: 'New MIDI clip here', action: () => runSelecting(`clip.add #${t.id} ${Math.floor(at / bpb()) * bpb()} ${bpb()}`) }] : []),
     { label: 'Select all clips', kbd: 'Ctrl+A', action: () => { selectClips(state.project.clips.map((c) => c.id)); changed() } },
   ])
@@ -317,15 +351,10 @@ hooks.emptyMenu = (trackId, at, pos) => {
 
 // ------------------------------------------------------------------ audio import
 /** Import files and place them at `at`: the first on `trackId` if that is an audio track, every
- *  other one on a new audio track named after its file. A project needs a folder first, because
- *  imported audio is copied into it. */
+ *  other one on a new audio track named after its file. A project that was never saved takes
+ *  them too (D-042): the engine keeps their copies until the first save. */
 async function importFiles(paths: string[], trackId: number | null, at: number) {
   if (!paths.length) return
-  if (!state.folder) {
-    toast('info', 'Save the project first', 'Imported audio is copied into the project folder, so it needs one. Choose a folder, then import again.')
-    pathPrompt('save')
-    return
-  }
   let target = track(trackId)?.kind === 'audio' ? trackId : null
   const made: number[] = []
   // Once the person has agreed to convert, the rest of the files in this drop are converted too.
@@ -362,11 +391,24 @@ async function importFiles(paths: string[], trackId: number | null, at: number) 
   if (made.length) { selectClips(made); changed() }
 }
 
-function importPrompt(trackId: number | null, at: number) {
-  textPrompt('Import audio: WAV, MP3 or FLAC (full path; "Copy as path" from Explorer works)', '', (v) => {
-    const path = v.trim().replace(/^"(.*)"$/, '$1')
-    if (path) importFiles([path], trackId, at)
-  })
+/** Import (Ctrl+I, the menus, the button on an empty audio track): straight to the system's file
+ *  picker. Before 2026-11-26 it asked for a path to be typed. */
+async function importPick(trackId: number | null, at: number) {
+  const files = await pickFiles('Import audio')
+  if (files.length) await importFiles(files, trackId, at)
+}
+hooks.addAudio = (trackId) => importPick(trackId, 0)
+
+/** The FX button on a track: its effects, and adding one. Straight to the picker when it has none. */
+function fxMenu(trackId: number, at: { x: number; y: number }) {
+  const t = track(trackId)
+  if (!t) return
+  if (!t.effects.length) return openEffectPicker(t)
+  menu(at, [
+    ...t.effects.map((f, i): Item => ({ label: `${fxLabel(f)}…`, small: f.bypass ? 'bypassed' : `slot ${i + 1}`, action: () => openEffectEditor(t.id, i + 1) })),
+    'sep',
+    { label: 'Add effect…', action: () => openEffectPicker(t), disabled: t.effects.length >= 8 },
+  ])
 }
 
 // Files dropped on the window (Tauri gives real paths; a plain browser does not).
@@ -465,12 +507,12 @@ addEventListener('keydown', (e) => {
   if (ctrl) {
     if (k === 'z' && !e.shiftKey) { handled(); run('undo') }
     else if ((k === 'z' && e.shiftKey) || k === 'y') { handled(); run('redo') }
-    else if (k === 's' && e.shiftKey) { handled(); pathPrompt('save') }
+    else if (k === 's' && e.shiftKey) { handled(); saveAs() }
     else if (k === 's') { handled(); save() }
-    else if (k === 'o') { handled(); pathPrompt('open') }
-    else if (k === 'n') { handled(); pathPrompt('new') }
+    else if (k === 'o') { handled(); openProject() }
+    else if (k === 'n') { handled(); newProject() }
     else if (k === 'e' && e.shiftKey) { handled(); openExport() }
-    else if (k === 'i') { handled(); const t = pasteTarget(); importPrompt(t.track, t.at) }
+    else if (k === 'i') { handled(); const t = pasteTarget(); importPick(t.track, t.at) }
     else if (k === 'e') { handled(); splitClips() }
     else if (k === 'c') { handled(); copyClips() }
     else if (k === 'x') { handled(); cutClips() }
@@ -522,6 +564,7 @@ async function start() {
   await loadKinds()
   ui.selTrack = state.project.tracks[0]?.id ?? null
   watchDevices()
+  watchInstruments()
   document.fonts?.ready.then(() => changed()) // canvases redraw once the bundled fonts are in
   const help = await run('help', { quiet: true })
   setCommandNames([...(help[0]?.text ?? '').matchAll(/^\s{2}([a-z][\w.]*)/gm)].map((m) => m[1]))

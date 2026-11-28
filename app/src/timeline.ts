@@ -7,14 +7,22 @@
 //   drag clip body        move the selection in time and across tracks (snaps; Alt = free)
 //   Ctrl + drag           copy instead of move
 //   drag clip edge        trim that edge (content stays put in time)
-//   drag on empty space   rubber-band select; a plain click there moves the playhead
+//   drag on empty space   rubber-band select (Shift adds); a plain click there moves the playhead
 //   double-click empty    new 1-bar MIDI clip on an instrument track
 //   double-click clip     open it in the piano roll or clip editor
 //   right-click           context menu
+//
+// Getting around (2026-11-26, D-043):
+//   wheel                 through the tracks when they do not all fit, through time when they do
+//   Shift + wheel         through time
+//   Ctrl + wheel          zoom, out as far as the whole song
+//   Ctrl + drag on empty space, or middle-button drag anywhere: drag the view itself
+//   the bar along the bottom: drag it through the song
+//   the tab on the ruler at the song's end: drag it right to give the song more room
 import { tp } from './transport'
 import { clipPeaks, levelAt } from './wave'
 import { beats, ids, PPQ, type Clip } from './engine'
-import { bpb, changed, clip, created, redraw, run, selectClips, state, ui } from './store'
+import { bpb, changed, clip, created, lastSound, redraw, run, selectClips, songEnd, state, ui } from './store'
 
 // Track colours: cool and muted, so the accent and the red record/clip warnings stand out.
 export const COLORS = ['#5aa2ff', '#a78bfa', '#2dd4bf', '#e6b450', '#f47c96', '#7bd88f', '#94a3ff', '#c9a27e']
@@ -22,11 +30,14 @@ export const trackColor = (id: number) => COLORS[(id - 1) % COLORS.length]
 export const RULER_H = 30
 const EDGE = 7 // px from a clip edge that grabs the edge instead of the body
 const MIN_PPB = 3, MAX_PPB = 400
+const SB = 10 // height of the scroll bar along the bottom
+const PILL = { x: 14, w: 124, h: 26 } // the "Add audio" button on an audio track with nothing on it
 
 export const hooks = {
   openClip: (_c: Clip) => {},
   clipMenu: (_c: Clip, _at: { x: number; y: number }) => {},
   emptyMenu: (_trackId: number | null, _beat: number, _at: { x: number; y: number }) => {},
+  addAudio: (_trackId: number) => {},
 }
 
 const cv = document.getElementById('timeline') as HTMLCanvasElement
@@ -59,9 +70,31 @@ const rowTop = (i: number) => RULER_H + i * C.rowH - ui.scrollY
 const rowAt = (py: number) => Math.floor((py - RULER_H + ui.scrollY) / C.rowH)
 
 function contentHeight() { return state.project.tracks.length * C.rowH + 64 }
+/** How far the timeline reaches, in beats: a little past the song's end, and room to start in. */
+const spanBeats = () => Math.max(songEnd() * 1.08 + 8, 128)
+const totalPx = () => Math.max(spanBeats() * ui.pxPerBeat, W)
+const maxScrollX = () => Math.max(0, totalPx() - W)
+/** The furthest zoom out: all of it on screen. */
+const minPpb = () => Math.min(MIN_PPB, W / spanBeats())
 export function clampScroll() {
   ui.scrollY = Math.max(0, Math.min(ui.scrollY, Math.max(0, contentHeight() - (H - RULER_H))))
-  ui.scrollX = Math.max(0, ui.scrollX)
+  ui.scrollX = Math.max(0, Math.min(ui.scrollX, maxScrollX()))
+}
+/** The scroll bar along the bottom: where its handle is, and whether there is anything to scroll. */
+function hbar() {
+  const total = totalPx(), w = Math.max(36, (W * W) / total), max = maxScrollX()
+  return { shown: total > W + 1, w, x0: (W - w) * (max ? Math.min(1, ui.scrollX / max) : 0) }
+}
+const overBar = (py: number) => hbar().shown && py >= H - SB - 2
+/** The tab on the ruler at the song's end. */
+const overEnd = (px: number, py: number) => py < RULER_H && songEnd() > 0 && Math.abs(px - x(songEnd())) <= 6
+/** The audio track whose "Add audio" button is under this point, if any. */
+function pillAt(px: number, py: number): number | null {
+  const row = rowAt(py), t = state.project.tracks[row]
+  if (!t || t.kind !== 'audio' || py < RULER_H || px < PILL.x || px > PILL.x + PILL.w) return null
+  const y = rowTop(row) + (C.rowH - PILL.h) / 2
+  if (py < y || py > y + PILL.h || state.project.clips.some((c) => c.track === t.id)) return null
+  return t.id
 }
 
 /** Snap a beat position to the grid unless snapping is off or Alt is held. */
@@ -76,6 +109,10 @@ type Drag =
   | { kind: 'trim'; id: number; side: 'start' | 'end'; edge: number }
   | { kind: 'marquee'; x0: number; y0: number; x1: number; y1: number; additive: boolean; base: Set<number> }
   | { kind: 'scrub' }
+  | { kind: 'pan'; x0: number; y0: number; sx: number; sy: number }
+  | { kind: 'hbar'; grab: number }
+  | { kind: 'end'; beat: number }
+  | { kind: 'pill'; track: number }
 let drag: Drag | null = null
 
 function rr(x0: number, y0: number, w: number, h: number, r: number) {
@@ -101,17 +138,24 @@ export function draw() {
     ctx.fillStyle = C.line; ctx.fillRect(0, y + C.rowH - 1, W, 1)
   })
 
-  // grid: bars always, beats when there is room, sixteenths when zoomed in
+  // grid: bars (every second, fourth, ... when zoomed out, so lines and numbers never crowd),
+  // beats when there is room, sixteenths when zoomed in
   const first = Math.floor(beatAt(0)), last = Math.ceil(beatAt(W))
   const showBeats = ui.pxPerBeat >= 10, show16 = ui.pxPerBeat >= 90
-  const barStep = ui.pxPerBeat * per < 24 ? (ui.pxPerBeat * per < 8 ? 8 : 4) : 1
-  for (let b = first; b <= last; b++) {
-    const bar = b / per, isBar = Number.isInteger(bar)
-    if ((!isBar && !showBeats) || (isBar && bar % barStep !== 0)) continue
-    ctx.fillStyle = isBar ? C.lineS : C.line
-    ctx.globalAlpha = isBar ? 0.9 : 0.55
-    ctx.fillRect(Math.round(x(b)), RULER_H, 1, H)
-    if (show16) { ctx.globalAlpha = 0.22; for (let k = 1; k < 4; k++) ctx.fillRect(Math.round(x(b + k / 4)), RULER_H, 1, H) }
+  const barPx = ui.pxPerBeat * per
+  let lineStep = 1, labelStep = 1
+  while (lineStep * barPx < 10) lineStep *= 2
+  while (labelStep * barPx < 40) labelStep *= 2
+  for (let bar = Math.floor(first / per / lineStep) * lineStep; bar * per <= last; bar += lineStep) {
+    const b0 = bar * per
+    ctx.fillStyle = C.lineS
+    ctx.globalAlpha = bar % labelStep === 0 ? 0.9 : 0.45
+    ctx.fillRect(Math.round(x(b0)), RULER_H, 1, H)
+    if (!showBeats) continue
+    for (let k = 0; k < per; k++) {
+      if (k) { ctx.fillStyle = C.line; ctx.globalAlpha = 0.55; ctx.fillRect(Math.round(x(b0 + k)), RULER_H, 1, H) }
+      if (show16) { ctx.fillStyle = C.line; ctx.globalAlpha = 0.22; for (let j = 1; j < 4 && k + j / 4 < per; j++) ctx.fillRect(Math.round(x(b0 + k + j / 4)), RULER_H, 1, H) }
+    }
   }
   ctx.globalAlpha = 1
 
@@ -134,6 +178,20 @@ export function draw() {
     drawClip(c, i, s, len, off, 1, ui.selClips.has(c.id))
   }
 
+  // An audio track with nothing on it says how to fill it (asked for 2026-11-26).
+  const used = new Set(state.project.clips.map((c) => c.track))
+  tracks.forEach((t, i) => {
+    if (t.kind !== 'audio' || used.has(t.id)) return
+    const y = rowTop(i) + (C.rowH - PILL.h) / 2
+    if (y > H || y + PILL.h < RULER_H) return
+    rr(PILL.x + 0.5, y + 0.5, PILL.w, PILL.h, 6)
+    ctx.fillStyle = C.surface; ctx.fill()
+    ctx.strokeStyle = C.lineS; ctx.lineWidth = 1; ctx.stroke()
+    ctx.fillStyle = C.dim; ctx.font = `500 11.5px ${C.font}`; ctx.textBaseline = 'middle'; ctx.textAlign = 'center'
+    ctx.fillText('+  Add audio…', PILL.x + PILL.w / 2, y + PILL.h / 2 + 0.5)
+    ctx.textAlign = 'left'
+  })
+
   if (drag?.kind === 'marquee') {
     const [x0, x1] = [Math.min(drag.x0, drag.x1), Math.max(drag.x0, drag.x1)]
     const [y0, y1] = [Math.min(drag.y0, drag.y1), Math.max(drag.y0, drag.y1)]
@@ -147,12 +205,23 @@ export function draw() {
   ctx.fillStyle = C.surface; ctx.fillRect(0, 0, W, RULER_H)
   ctx.fillStyle = C.line; ctx.fillRect(0, RULER_H - 1, W, 1)
   ctx.font = `500 10.5px ${C.mono}`; ctx.textBaseline = 'middle'
-  for (let b = Math.floor(first / per) * per; b <= last; b += per) {
-    const bar = Math.round(b / per)
-    if (bar % barStep !== 0) continue
-    const px = Math.round(x(b))
+  for (let bar = Math.floor(first / per / labelStep) * labelStep; bar * per <= last; bar += labelStep) {
+    const px = Math.round(x(bar * per))
     ctx.fillStyle = C.lineS; ctx.fillRect(px, 14, 1, RULER_H - 14)
     ctx.fillStyle = C.dim; ctx.fillText(String(bar + 1), px + 5, 20)
+  }
+
+  // The song's end (D-043): playback stops here. Past it the timeline is dimmed; the tab on the
+  // ruler drags it further out.
+  const end = drag?.kind === 'end' ? drag.beat : songEnd()
+  if (end > 0) {
+    const ex = Math.round(x(end))
+    if (ex < W) { ctx.fillStyle = '#00000042'; ctx.fillRect(Math.max(0, ex), RULER_H, W - Math.max(0, ex), H - RULER_H) }
+    if (ex >= -8 && ex <= W + 8) {
+      ctx.fillStyle = drag?.kind === 'end' ? C.text : C.dim
+      ctx.fillRect(ex, RULER_H - 4, 1.5, H)
+      ctx.beginPath(); ctx.moveTo(ex - 5, RULER_H - 14); ctx.lineTo(ex + 6.5, RULER_H - 14); ctx.lineTo(ex + 6.5, RULER_H - 6); ctx.lineTo(ex + 0.75, RULER_H); ctx.lineTo(ex - 5, RULER_H - 6); ctx.closePath(); ctx.fill()
+    }
   }
 
   // playhead
@@ -161,6 +230,19 @@ export function draw() {
     ctx.fillStyle = C.accent
     ctx.fillRect(ph, 0, 1.5, H)
     ctx.beginPath(); ctx.moveTo(ph - 5, 0); ctx.lineTo(ph + 6.5, 0); ctx.lineTo(ph + 0.75, 8); ctx.closePath(); ctx.fill()
+  }
+
+  // the scroll bar through the song, when not all of it is on screen
+  // Where the view is, for the GUI test (tools/gui-test.mjs): written only when it changes.
+  const view = `${Math.round(ui.scrollX)} ${+ui.pxPerBeat.toFixed(3)} ${Math.round(x(end) + ui.scrollX)}`
+  if (cv.dataset.view !== view) cv.dataset.view = view
+
+  const sb = hbar()
+  if (sb.shown) {
+    ctx.fillStyle = C.surface; ctx.fillRect(0, H - SB, W, SB)
+    ctx.fillStyle = C.line; ctx.fillRect(0, H - SB, W, 1)
+    rr(sb.x0 + 2, H - SB + 2.5, sb.w - 4, SB - 4, 3)
+    ctx.fillStyle = drag?.kind === 'hbar' ? C.dim : C.lineS; ctx.fill()
   }
 }
 
@@ -221,8 +303,9 @@ export function follow() {
 
 export function zoom(factor: number, anchorPx = W / 2) {
   const beat = beatAt(anchorPx)
-  ui.pxPerBeat = Math.min(MAX_PPB, Math.max(MIN_PPB, ui.pxPerBeat * factor))
-  ui.scrollX = Math.max(0, beat * ui.pxPerBeat - anchorPx)
+  ui.pxPerBeat = Math.min(MAX_PPB, Math.max(minPpb(), ui.pxPerBeat * factor))
+  ui.scrollX = beat * ui.pxPerBeat - anchorPx
+  clampScroll()
   redraw()
 }
 
@@ -259,16 +342,38 @@ function hit(px: number, py: number): Hit {
 cv.addEventListener('wheel', (e) => {
   e.preventDefault()
   if (e.ctrlKey || e.metaKey) return zoom(Math.exp(-e.deltaY * 0.0022), e.offsetX)
-  if (e.shiftKey) ui.scrollX += e.deltaY
+  // The wheel moves through the tracks when they do not all fit, and through time when they do:
+  // with two tracks it used to do nothing, and a long song could not be reached (2026-11-26).
+  const tall = contentHeight() > H - RULER_H
+  if (e.shiftKey || !tall) ui.scrollX += e.deltaY + e.deltaX
   else { ui.scrollY += e.deltaY; ui.scrollX += e.deltaX }
   clampScroll(); redraw()
 }, { passive: false })
 
+// The middle button drags the view; it must not start the browser's own scroll-anywhere mode.
+cv.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault() })
+
+/** Put the scroll bar's handle where the pointer is. */
+function barTo(px: number, grab: number) {
+  const w = hbar().w
+  ui.scrollX = maxScrollX() * Math.min(1, Math.max(0, (px - grab) / Math.max(1, W - w)))
+}
+
 cv.addEventListener('pointerdown', (e) => {
   ui.focus = 'timeline'
-  if (e.button !== 0) return
+  if (e.button !== 0 && e.button !== 1) return
   try { cv.setPointerCapture(e.pointerId) } catch { /* pointer already gone: the drag still works inside the canvas */ }
+  const pan = (): Drag => ({ kind: 'pan', x0: e.clientX, y0: e.clientY, sx: ui.scrollX, sy: ui.scrollY })
+  if (e.button === 1) { e.preventDefault(); drag = pan(); cv.style.cursor = 'grabbing'; return }
+  if (overBar(e.offsetY)) {
+    const b = hbar(), inside = e.offsetX >= b.x0 && e.offsetX <= b.x0 + b.w
+    drag = { kind: 'hbar', grab: inside ? e.offsetX - b.x0 : b.w / 2 }
+    barTo(e.offsetX, drag.grab)
+    redraw()
+    return
+  }
   if (e.offsetY < RULER_H) {
+    if (overEnd(e.offsetX, e.offsetY)) { drag = { kind: 'end', beat: songEnd() }; redraw(); return }
     drag = { kind: 'scrub' }
     tp.pos = Math.max(0, snap(beatAt(e.offsetX), e.altKey))
     redraw()
@@ -278,7 +383,11 @@ cv.addEventListener('pointerdown', (e) => {
   if (h.row >= 0) ui.selTrack = state.project.tracks[h.row].id
   const c = h.clip
   if (!c) {
-    const additive = e.shiftKey || e.ctrlKey || e.metaKey
+    const pill = pillAt(e.offsetX, e.offsetY)
+    if (pill !== null) { drag = { kind: 'pill', track: pill }; changed(); return }
+    // Ctrl + drag on empty space drags the view. (On a clip, Ctrl + drag copies the clip.)
+    if (e.ctrlKey || e.metaKey) { drag = pan(); cv.style.cursor = 'grabbing'; return }
+    const additive = e.shiftKey
     const px = e.offsetX + ui.scrollX, py = e.offsetY + ui.scrollY
     drag = { kind: 'marquee', x0: px, y0: py, x1: px, y1: py, additive, base: additive ? new Set(ui.selClips) : new Set() }
     if (!additive) selectClips([])
@@ -305,11 +414,22 @@ cv.addEventListener('pointerdown', (e) => {
 cv.addEventListener('pointermove', (e) => {
   if (!drag) {
     if (e.buttons) return
+    const atEnd = overEnd(e.offsetX, e.offsetY)
     const h = e.offsetY < RULER_H ? null : hit(e.offsetX, e.offsetY)
-    cv.style.cursor = e.offsetY < RULER_H ? 'text' : h?.edge ? 'ew-resize' : h?.clip ? 'grab' : 'default'
+    cv.style.cursor = overBar(e.offsetY) ? 'default' : atEnd ? 'ew-resize' : e.offsetY < RULER_H ? 'text' : h?.edge ? 'ew-resize' : h?.clip ? 'grab' : pillAt(e.offsetX, e.offsetY) !== null ? 'pointer' : 'default'
+    const tip = atEnd ? 'The end of the song: playback stops here. Drag it right to give the song more room.' : ''
+    if (cv.title !== tip) cv.title = tip
     return
   }
+  if (drag.kind === 'pill') return
+  if (drag.kind === 'pan') {
+    ui.scrollX = drag.sx - (e.clientX - drag.x0); ui.scrollY = drag.sy - (e.clientY - drag.y0)
+    clampScroll(); redraw()
+    return
+  }
+  if (drag.kind === 'hbar') { barTo(e.offsetX, drag.grab); redraw(); return }
   autoScroll(e.offsetX)
+  if (drag.kind === 'end') { drag.beat = Math.max(lastSound(), snap(beatAt(e.offsetX), e.altKey)); cv.style.cursor = 'ew-resize'; redraw(); return }
   if (drag.kind === 'scrub') { tp.pos = Math.max(0, snap(beatAt(e.offsetX), e.altKey)); redraw(); return }
   if (drag.kind === 'marquee') { drag.x1 = e.offsetX + ui.scrollX; drag.y1 = e.offsetY + ui.scrollY; marqueeSelect(drag); redraw(); return }
   if (drag.kind === 'trim') {
@@ -336,6 +456,14 @@ const finish = async (e: PointerEvent) => {
   drag = null
   if (!d) return
   if (d.kind === 'scrub') return
+  if (d.kind === 'pan' || d.kind === 'hbar') { cv.style.cursor = 'default'; changed(); return }
+  if (d.kind === 'pill') { if (pillAt(e.offsetX, e.offsetY) === d.track) hooks.addAudio(d.track); changed(); return }
+  if (d.kind === 'end') {
+    // Nearer than the last clip means "at the last sound": the engine puts it back there.
+    if (Math.abs(d.beat - songEnd()) > 1e-9) await run(`project.end ${+d.beat.toFixed(6)}`)
+    changed()
+    return
+  }
   if (d.kind === 'marquee') {
     if (Math.hypot(d.x1 - d.x0, d.y1 - d.y0) < 4) {
       // A plain click on empty space: put the playhead there.

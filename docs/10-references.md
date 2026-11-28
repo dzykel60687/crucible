@@ -41,7 +41,16 @@ decision depends on before relying on it.
 | What | Licence | Used for |
 |---|---|---|
 | `rubato` 5.1 (with `realfft`, `rustfft`, `audioadapter`) | MIT or Apache-2.0 (realfft, windowfunctions: MIT) | Sample-rate conversion (D-039), FFT resampler in 64-bit |
-| Tauri's default WiX template (tauri-bundler) | MIT or Apache-2.0 | `app/src-tauri/wix/main.wxs`, changed for a per-user install; extracted from the Tauri CLI that builds the installer |
+| `rfd` 0.18 (Rusty File Dialog) | MIT | The system's folder and file pickers for Browse and Import (D-042); the same crate Tauri's dialog plugin wraps, used directly |
+
+## Added 2026-11-27 (D-044)
+
+| Crate | Licence | Used for |
+|---|---|---|
+| `vst3` 0.3 (coupler-rs) | MIT or Apache-2.0 | The test instrument's VST3 interfaces. Already in the build under vst3-host. Its `examples/gain.rs` was the pattern for `crucible-test-synth` (written fresh, not copied) |
+| `raw-window-handle` 0.6 | MIT, Apache-2.0 or zlib | The main window's native handle, so plugins' windows float above it. Already in the build under Tauri |
+| `windows-sys` 0.61 (more features) | MIT or Apache-2.0 | `editor_window.rs` (seam 2) and the test instrument's window |
+| Tauri's default WiX template (tauri-bundler) | MIT or Apache-2.0 | `app/src-tauri/wix/main.wxs`, changed only to list the licence, notices and tool (per machine, as Tauri's own); extracted from the Tauri CLI that builds the installer |
 
 ## Crucible's own licence (D-036, 2026-11-23)
 
@@ -124,7 +133,7 @@ Community numbers as measured on 2026-11-19:
 | `cpal` | 0.18 | Apache-2.0 | Device listing, WASAPI shared mode |
 | `wasapi` | 0.27 | MIT | WASAPI exclusive mode (D-020) |
 | `midir` | 0.11 | MIT | MIDI inputs |
-| `vst3-host` | 0.11 | MIT | VST3 loading, playback path in the spike |
+| `vst3-host` | 0.11 | MIT | VST3 loading and the plugin windows (D-044); the spike's playback path |
 | `hound` | 3.5 | Apache-2.0 | WAV writing in the spike |
 | `sysinfo` | 0.40 | MIT | Machine facts in log headers (D-021) |
 | `chrono` | 0.4 | MIT or Apache-2.0 | Local time in logs (D-021) |

@@ -391,6 +391,26 @@ impl Sources {
         self.lock().clear();
     }
 
+    /// Let go of the sound held for these files, at any rate. Returns the megabytes let go.
+    pub(crate) fn release(&self, files: &[PathBuf]) -> f64 {
+        let mut held = self.lock();
+        let before: f64 = held.values().map(|d| d.megabytes()).sum();
+        held.retain(|(p, _), _| !files.contains(p));
+        before - held.values().map(|d| d.megabytes()).sum::<f64>()
+    }
+
+    /// The files under `from` were copied to `to` (a save somewhere new): hold their sound under
+    /// the new paths, so it is not decoded again.
+    pub(crate) fn moved(&self, from: &Path, to: &Path) {
+        let mut held = self.lock();
+        let old: Vec<(PathBuf, u32)> = held.keys().filter(|(p, _)| p.starts_with(from)).cloned().collect();
+        for key in old {
+            if let (Ok(rel), Some(d)) = (key.0.strip_prefix(from).map(Path::to_path_buf), held.remove(&key)) {
+                held.insert((to.join(rel), key.1), d);
+            }
+        }
+    }
+
     /// Memory held, in MB.
     pub(crate) fn megabytes(&self) -> f64 {
         self.lock().values().map(|d| d.megabytes()).sum()
@@ -470,11 +490,67 @@ fn decode_file(path: &Path) -> Result<(Vec<Vec<f32>>, u32), DawError> {
     Ok((ch, rate))
 }
 
-fn audio_dir(e: &Engine) -> Result<PathBuf, DawError> {
-    e.folder
-        .as_ref()
-        .map(|f| f.join(AUDIO_DIR))
-        .ok_or_else(|| DawError::new(Code::ProjectNotSaved, "the project has no folder yet"))
+/// The project's audio folder; for a project never saved, its own folder until then (D-042).
+fn audio_dir(e: &mut Engine) -> Result<PathBuf, DawError> {
+    Ok(e.work_folder()?.join(AUDIO_DIR))
+}
+
+/// Copy the audio folder of the project folder `from` into `to`, for a save somewhere new. A file
+/// already there with the same bytes is left alone. Returns how many files were copied, and bytes.
+pub(crate) fn copy_audio(from: &Path, to: &Path) -> Result<(usize, u64), DawError> {
+    let (src, dst) = (from.join(AUDIO_DIR), to.join(AUDIO_DIR));
+    let Ok(entries) = std::fs::read_dir(&src) else { return Ok((0, 0)) };
+    let fail = |what: &Path, e: std::io::Error| DawError::new(Code::ProjectSaveFailed, format!("copying {} into {}: {e}", what.display(), dst.display()));
+    std::fs::create_dir_all(&dst).map_err(|e| fail(&src, e))?;
+    let (mut files, mut bytes) = (0, 0);
+    for f in entries.flatten().map(|e| e.path()).filter(|p| p.is_file()) {
+        let Some(name) = f.file_name() else { continue };
+        let there = dst.join(name);
+        if same_bytes(&f, &there) {
+            continue;
+        }
+        bytes += std::fs::copy(&f, &there).map_err(|e| fail(&f, e))?;
+        files += 1;
+    }
+    Ok((files, bytes))
+}
+
+/// After an edit: let go of sound held in memory for files that were on the timeline before it
+/// and are on it no longer (a clip or a track removed, an undo). Found by Dzyan 2026-11-26: two
+/// long songs converted to 192 kHz held 1.1 GB, and still did after both were removed. The sound
+/// used to be kept until another project was opened, so that undoing a removal was instant; now
+/// an undone removal reads its file again the next time it plays.
+pub(crate) fn release_unused(e: &Engine, before: &Project) {
+    let files = |p: &Project| -> std::collections::HashSet<String> {
+        p.clips.iter().filter(|c| c.has_audio_file()).filter_map(|c| match &c.content {
+            Content::Audio { source, .. } => Some(source.to_string()),
+            _ => None,
+        }).collect()
+    };
+    let (was, now) = (files(before), files(&e.project));
+    let gone: Vec<&String> = was.difference(&now).collect();
+    let Some(dir) = e.work().map(|w| w.join(AUDIO_DIR)) else { return };
+    if gone.is_empty() {
+        return;
+    }
+    let freed = e.sources.release(&gone.iter().map(|f| dir.join(f)).collect::<Vec<_>>());
+    if freed > 0.0 {
+        diag::event("AUDIO", format!("out of memory: {} | {freed:.0} MB let go, no clip uses it now", gone.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+    }
+}
+
+/// Where playback stops, in frames (D-043): after the last sound, effect tails included; after
+/// the last clip of any kind, muted or not (a MIDI clip is silent until instruments are hosted,
+/// but the song is still that long, and the window draws its end there); or where the person
+/// moved the end to, if that is further out. 0 for a project with nothing in it.
+pub(crate) fn song_end(p: &Project, m: &Mixer) -> u64 {
+    let last_clip = p.clips.iter().map(|c| c.start + c.length).max().unwrap_or(0).max(0);
+    m.end_frame().max((last_clip as f64 * p.frames_per_tick()).round() as u64).max(set_end(p))
+}
+
+/// The frame the person moved the song's end to (D-043), or 0 if it is at the last sound.
+pub(crate) fn set_end(p: &Project) -> u64 {
+    (p.end.max(0) as f64 * p.frames_per_tick()).round() as u64
 }
 
 /// Whether two files hold the same bytes. Sizes first, then 64 KB at a time.
@@ -802,6 +878,32 @@ struct Strip {
     buf: (Vec<f32>, Vec<f32>),
     /// Samples the effects keep sounding after the last clip ends.
     tail: u64,
+    /// An instrument track's plugin and notes (D-044). Such a strip has no voices.
+    inst: Option<Box<crate::rack::InstSource>>,
+    /// Where the instrument's last clip note has rung out.
+    inst_end: u64,
+    /// Where the audio thread leaves this track's level for the meters (live strips only).
+    meter: Option<Arc<crate::rack::Meter>>,
+}
+
+/// Which tracks a mixer is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Part {
+    /// The audio clips: what playback's feeder mixes ahead of time.
+    Tape,
+    /// The instruments: mixed in the audio device's own callback, so a key is heard at once.
+    Live,
+    /// Everything, for an export.
+    All,
+}
+
+/// What the audio thread hands a live mixer before each block.
+#[derive(Default)]
+pub(crate) struct LiveIn {
+    /// The song is running: clips' notes play. Otherwise only the keyboards do.
+    pub rolling: bool,
+    /// Keys played since the last block. Never grows past the room it was made with.
+    pub keys: Vec<crate::rack::Key>,
 }
 
 /// Everything needed to mix a project, built once (it allocates and reads impulse responses),
@@ -810,6 +912,10 @@ pub(crate) struct Mixer {
     pub voices: Vec<Voice>,
     strips: Vec<Strip>,
     block: usize,
+    pub live: LiveIn,
+    /// Mixers the audio thread is done with are strung together here until another thread
+    /// frees them (`play.rs`): the audio thread itself never frees memory.
+    pub next: Option<Box<Mixer>>,
 }
 
 /// Build the mixer. Muted tracks are left out; if any track is soloed, only soloed tracks play.
@@ -820,14 +926,27 @@ pub(crate) struct Mixer {
 /// tempo they were built from. An effect found there unchanged is not built again; a stand-in
 /// takes its place until `Mixer::inherit` swaps the running one in, sound and all.
 pub(crate) fn mixer(p: &Project, folder: Option<&Path>, block: usize, held: Option<&Held>, sources: &Sources) -> Result<Mixer, DawError> {
+    mixer_for(p, folder, block, held, sources, Part::Tape, None)
+}
+
+/// The mixer for one part of the project. Instruments come from `rack`.
+///
+/// A live mixer holds a strip for every loaded instrument, also a muted one: the plugin must
+/// hear every note-off even while silenced, or it would resume with notes stuck on.
+pub(crate) fn mixer_for(p: &Project, folder: Option<&Path>, block: usize, held: Option<&Held>, sources: &Sources, part: Part, rack: Option<&crate::rack::Rack>) -> Result<Mixer, DawError> {
     let any_solo = p.tracks.iter().any(|t| t.solo);
     let fpt = p.frames_per_tick();
     let rate = f64::from(p.sample_rate);
     let mut checked = std::collections::HashMap::<PathBuf, (Src, u64)>::new();
     let (mut voices, mut strips) = (Vec::new(), Vec::new());
-    for t in p.tracks.iter().filter(|t| !t.mute && (!any_solo || t.solo)) {
+    for t in p.tracks.iter() {
+        let audible = !t.mute && (!any_solo || t.solo);
+        let inst = if part != Part::Tape && (audible || part == Part::Live) { rack.and_then(|r| r.source(p, t, part == Part::All)) } else { None };
+        if (part == Part::Live && inst.is_none()) || (part != Part::Live && !audible) {
+            continue;
+        }
         let first = voices.len();
-        for c in p.clips.iter().filter(|c| c.track == t.id && c.has_audio_file()) {
+        for c in p.clips.iter().filter(|c| part != Part::Live && c.track == t.id && c.has_audio_file()) {
             let Content::Audio { source, frames, .. } = &c.content else { continue };
             let folder = folder.ok_or_else(|| DawError::new(Code::ProjectNotSaved, "the project has audio but no folder"))?;
             let path = folder.join(AUDIO_DIR).join(source);
@@ -855,7 +974,7 @@ pub(crate) fn mixer(p: &Project, folder: Option<&Path>, block: usize, held: Opti
             let len = ((c.length as f64 * fpt).round() as u64).min(file_frames.saturating_sub(from));
             voices.push(Voice { src, at: (c.start as f64 * fpt).round() as u64, from, len, gain: gain(c.gain_db) });
         }
-        if voices.len() == first {
+        if voices.len() == first && inst.is_none() {
             continue; // nothing on this track makes sound yet
         }
         let (mut effects, mut ids) = (Vec::new(), Vec::new());
@@ -869,10 +988,40 @@ pub(crate) fn mixer(p: &Project, folder: Option<&Path>, block: usize, held: Opti
         }
         let tail = effects.iter().map(|e| e.tail()).sum();
         let (l, r) = pan_gains(t.pan);
-        let g = gain(t.gain_db) * gain(p.master_gain_db);
-        strips.push(Strip { track: t.id, voices: first..voices.len(), effects, ids, peak: (0.0, 0.0), out: (g * l, g * r), buf: (vec![0.0; block], vec![0.0; block]), tail });
+        let g = if audible { gain(t.gain_db) * gain(p.master_gain_db) } else { 0.0 };
+        let inst_end = inst.as_ref().map_or(0, |i| i.end(p.sample_rate));
+        let meter = (part == Part::Live).then(|| Arc::new(crate::rack::Meter { track: t.id, peak: Default::default() }));
+        strips.push(Strip { track: t.id, voices: first..voices.len(), effects, ids, peak: (0.0, 0.0), out: (g * l, g * r), buf: (vec![0.0; block], vec![0.0; block]), tail, inst, inst_end, meter });
     }
-    Ok(Mixer { voices, strips, block })
+    Ok(Mixer { voices, strips, block, live: LiveIn { rolling: part == Part::All, keys: Vec::with_capacity(256) }, next: None })
+}
+
+impl Mixer {
+    /// A mixer with nothing in it: what the audio thread holds before the first real one.
+    pub(crate) fn empty() -> Mixer {
+        Mixer { voices: Vec::new(), strips: Vec::new(), block: 0, live: LiveIn::default(), next: None }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.strips.is_empty()
+    }
+
+    /// The live strips' meters, for whoever shows them.
+    pub(crate) fn meters(&self) -> Vec<Arc<crate::rack::Meter>> {
+        self.strips.iter().filter_map(|s| s.meter.clone()).collect()
+    }
+
+    /// The audio thread, after a block: leave each track's level where the meters read it.
+    pub(crate) fn publish_peaks(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        for s in &mut self.strips {
+            if let Some(m) = &s.meter {
+                m.peak[0].fetch_max(s.peak.0.to_bits(), Relaxed);
+                m.peak[1].fetch_max(s.peak.1.to_bits(), Relaxed);
+            }
+            s.peak = (0.0, 0.0);
+        }
+    }
 }
 
 /// Effects a running mixer holds: id to (settings, tempo bits).
@@ -894,10 +1043,17 @@ impl Mixer {
                 let Some((o, j)) = old.strips.iter_mut().find_map(|o| o.ids.iter().position(|i| i.0 == *id).map(|j| (o, j))) else { continue };
                 if *stand_in {
                     std::mem::swap(&mut s.effects[k], &mut o.effects[j]);
-                    *stand_in = false;
+                    // `old` may itself never have run (a mixer replaced before the audio thread
+                    // took it): then what it held for this effect was a stand-in too.
+                    *stand_in = o.ids[j].1;
                 } else {
                     s.effects[k].adopt(&mut *o.effects[j]);
                 }
+            }
+            if let Some(new) = &mut s.inst
+                && let Some(was) = old.strips.iter().find_map(|o| o.inst.as_deref().filter(|i| i.track() == new.track()))
+            {
+                new.adopt(was);
             }
         }
     }
@@ -914,7 +1070,7 @@ impl Mixer {
     }
     /// The frame just after the last sound, effect tails included.
     pub(crate) fn end_frame(&self) -> u64 {
-        self.strips.iter().map(|s| self.voices[s.voices.clone()].iter().map(|v| v.at + v.len).max().unwrap_or(0) + s.tail).max().unwrap_or(0)
+        self.strips.iter().map(|s| self.voices[s.voices.clone()].iter().map(|v| v.at + v.len).max().unwrap_or(0).max(s.inst_end) + s.tail).max().unwrap_or(0)
     }
 
     /// The frame just after the last clip, without tails.
@@ -941,12 +1097,16 @@ pub(crate) fn render(
     left.fill(0.0);
     right.fill(0.0);
     let end = start + n as u64;
-    for s in &mut m.strips {
+    let Mixer { voices, strips, live, .. } = m;
+    for s in strips {
         let (tl, tr) = (&mut s.buf.0[..n], &mut s.buf.1[..n]);
         tl.fill(0.0);
         tr.fill(0.0);
+        if let Some(inst) = &mut s.inst {
+            inst.fill(start, live.rolling, &live.keys, tl, tr);
+        }
         for i in s.voices.clone() {
-            let v = &m.voices[i];
+            let v = &voices[i];
             let (a, b) = (v.at.max(start), (v.at + v.len).min(end));
             if a >= b {
                 continue;
@@ -993,16 +1153,16 @@ fn project_export(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let dither = bits == "16" && a.text("dither") != Some("off");
     let p = &e.project;
     let fpt = p.frames_per_tick();
-    let mut m = mixer(p, e.folder.as_deref(), BLOCK, None, &e.sources)?;
+    let mut m = mixer_for(p, e.work(), BLOCK, None, &e.sources, Part::All, Some(&e.rack))?;
     let start = (super::clips::ticks(a.number("start").unwrap_or(0.0))?.max(0) as f64 * fpt).round() as u64;
     let end = match a.number("end") {
         Some(b) => (super::clips::ticks(b)? as f64 * fpt).round() as u64,
-        None => m.end_frame(),
+        None => m.end_frame().max(set_end(p)),
     };
     if end <= start {
         return Err(DawError::new(
             Code::ExportFailed,
-            if a.number("end").is_none() { "nothing to export: no audible audio clips (MIDI is silent until instruments exist)".to_string() } else { "the end is not after the start".to_string() },
+            if a.number("end").is_none() { "nothing to export: no audible audio clips, and no notes on a track with a loaded instrument".to_string() } else { "the end is not after the start".to_string() },
         ));
     }
     let fail = |why: String| DawError::new(Code::ExportFailed, format!("{}: {why}", file.display()));
@@ -1025,6 +1185,13 @@ fn project_export(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     let (mut peak, mut overs) = (0.0f32, 0u64);
     let mut pos = start;
     let t0 = std::time::Instant::now();
+    // Instruments leave the live sound for the length of the export and are told it is one, so
+    // a sampled instrument takes the time it needs per block instead of skipping notes.
+    let instruments = e.rack.any_loaded();
+    if instruments {
+        super::play::pause_live(e, true);
+        e.rack.offline(true, p.sample_rate);
+    }
     let result = (|| -> Result<(), DawError> {
         while pos < end {
             let n = BLOCK.min((end - pos) as usize);
@@ -1059,6 +1226,13 @@ fn project_export(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
         }
         Ok(())
     })();
+    let (mixed_end, clips_end) = (m.end_frame(), m.clips_end());
+    drop(m);
+    if instruments {
+        e.rack.offline(false, e.project.sample_rate);
+        super::play::pause_live(e, false);
+    }
+    let p = &e.project;
     if let Err(err) = result {
         drop(w);
         let _ = std::fs::remove_file(&tmp);
@@ -1068,7 +1242,7 @@ fn project_export(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     std::fs::rename(&tmp, &file).map_err(|err| fail(err.to_string()))?;
     let frames = end - start;
     let secs = frames as f64 / f64::from(p.sample_rate);
-    let tail_s = if a.number("end").is_none() { m.end_frame().saturating_sub(m.clips_end()) as f64 / f64::from(p.sample_rate) } else { 0.0 };
+    let tail_s = if a.number("end").is_none() && clips_end > 0 { mixed_end.saturating_sub(clips_end) as f64 / f64::from(p.sample_rate) } else { 0.0 };
     let peak_db = if peak > 0.0 { 20.0 * f64::from(peak).log10() } else { f64::NEG_INFINITY };
     if overs > 0 {
         diag::warn(Code::ExportClipped, format!("{}: {overs} samples clipped, peak {peak_db:+.2} dBFS", file.display()));
@@ -1279,15 +1453,79 @@ mod tests {
         assert_eq!(&after[2 * 48_000..], &before[2 * 24_000..], "same samples, starting one second in");
     }
 
+    /// D-042: a project never saved takes files at once; saving takes its audio along, and Save as
+    /// to another folder does too (before 2026-11-26 it wrote only project.json).
+    #[test]
+    fn an_unsaved_project_takes_its_audio_along() {
+        let root = temp("unsaved");
+        let ok = root.join("ok.wav");
+        wav(&ok, 48_000, 1, "16", &noise(4_800));
+        let mut e = Engine::new();
+        run(&mut e, "track.add Gtr").unwrap();
+        let source = import_place(&mut e, &ok, "Gtr", 0.0);
+        let scratch = e.work().unwrap().to_path_buf();
+        assert!(scratch.join("audio").join(&source).is_file(), "imported into the unsaved project's own folder");
+        assert!(e.folder().is_none() && e.is_dirty());
+        let before = root.join("before.wav");
+        run(&mut e, &format!("project.export \"{}\"", before.display())).unwrap();
+
+        let song = root.join("My Song");
+        let r = run(&mut e, &format!("project.save \"{}\"", song.display())).unwrap();
+        assert!(r.text.contains("1 audio file copied"), "{}", r.text);
+        assert!(song.join("audio").join(&source).is_file(), "the audio went along");
+        assert!(!scratch.exists(), "the unsaved project's folder is gone");
+        let after = root.join("after.wav");
+        run(&mut e, &format!("project.export \"{}\"", after.display())).unwrap();
+        assert_eq!(ints(&before), ints(&after), "the saved project plays the same");
+
+        let copy = root.join("Copy");
+        run(&mut e, &format!("project.save \"{}\"", copy.display())).unwrap();
+        let mut reopened = Engine::new();
+        run(&mut reopened, &format!("project.open \"{}\"", copy.display())).unwrap();
+        let again = root.join("again.wav");
+        run(&mut reopened, &format!("project.export \"{}\"", again.display())).unwrap();
+        assert_eq!(ints(&before), ints(&again), "Save as made a copy that opens whole");
+
+        // D-043: the end moved out past the last sound makes a whole-song export that long;
+        // nearer than the last clip means "at the last sound" again.
+        run(&mut reopened, "project.end 8").unwrap(); // 8 beats at 120 BPM = 4 s = 192,000 stereo frames
+        run(&mut reopened, &format!("project.export \"{}\"", again.display())).unwrap();
+        assert_eq!(ints(&again).len(), 2 * 192_000);
+        assert_eq!(run(&mut reopened, "project.end 0.01").unwrap().data["end"], 0.0);
+
+        // Discarding an unsaved project removes its folder.
+        let mut d = Engine::new();
+        run(&mut d, "track.add Gtr").unwrap();
+        import_place(&mut d, &ok, "Gtr", 0.0);
+        let gone = d.work().unwrap().to_path_buf();
+        run(&mut d, "project.new --discard").unwrap();
+        assert!(!gone.exists());
+    }
+
+    /// Removing the last clip that uses a file lets its sound out of memory (2026-11-26); an
+    /// undone removal plays the same again.
+    #[test]
+    fn sound_no_clip_uses_is_let_go() {
+        let (mut e, dir, inp) = project("letgo");
+        let cd = inp.join("cd.wav");
+        wav(&cd, 44_100, 2, "16", &noise(2 * 4_410));
+        let r = run(&mut e, &format!("audio.import \"{}\" --convert", cd.display())).unwrap();
+        let source = r.data["source"].as_str().unwrap().to_string();
+        run(&mut e, &format!("clip.place Gtr 0 \"{source}\" --convert")).unwrap();
+        let (a, b) = (dir.join("a.wav"), dir.join("b.wav"));
+        run(&mut e, &format!("project.export \"{}\"", a.display())).unwrap();
+        assert!(e.sources.megabytes() > 0.0, "a converted file plays from memory");
+        run(&mut e, "track.add Other").unwrap();
+        assert!(e.sources.megabytes() > 0.0, "an edit that removes nothing lets nothing go");
+        run(&mut e, "clip.remove #1").unwrap();
+        assert_eq!(e.sources.megabytes(), 0.0, "removed: let go");
+        run(&mut e, "undo").unwrap();
+        run(&mut e, &format!("project.export \"{}\"", b.display())).unwrap();
+        assert_eq!(ints(&a), ints(&b), "undone: read again, the same");
+    }
+
     #[test]
     fn refusals_are_coded() {
-        let mut e = Engine::new();
-        let inp = temp("refuse");
-        let f441 = inp.join("cd.wav");
-        wav(&f441, 44_100, 2, "16", &[0.0; 200]);
-        run(&mut e, "track.add Gtr").unwrap();
-        assert_eq!(run(&mut e, &format!("audio.import \"{}\"", f441.display())).unwrap_err().code, Code::ProjectNotSaved);
-
         let (mut e, dir, inp) = project("refuse2");
         let f441b = inp.join("cd.wav");
         wav(&f441b, 44_100, 2, "16", &[0.0; 200]);

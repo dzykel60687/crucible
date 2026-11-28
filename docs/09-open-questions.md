@@ -23,6 +23,10 @@ strike it here with the date.
 | Q10 | Confirm the *Proposed* decisions: D-005, D-013 to D-017, D-030 to D-034. (D-011 was replaced by D-036; the overlapping-clips part of D-031 is decided.) | So they stop being assumptions | Before M2 |
 | ~~Q12~~ | ~~Overlapping clips on one track: sum them, or let the later one win?~~ **Answered 2026-11-23: both play** (summed, as built). | | |
 | ~~Q13~~ | ~~Files at another sample rate: keep refusing, or convert at import?~~ **Answered 2026-11-25: offer to convert** (D-039). | | |
+| Q14 | The ruler counts bars; he wants positions in minutes and seconds (2026-11-26, said of the top bar). Ruler in time, in bars, or a switch between them? | Bars mean nothing for a song not made to a click; they mean everything for MIDI at a tempo | Nothing |
+| Q15 | Ctrl+drag drags the view on empty space only, because on a clip it copies (D-043). Make it drag the view everywhere and move copy to another key? | He asked for Ctrl+drag; the middle button already drags from anywhere | Nothing |
+| Q16 | Hold converted audio at the file's own rate and convert while playing (D-039, 2026-11-26)? About four times less memory at 192 kHz | His two songs held 1.1 GB | Nothing |
+| Q17 | ~~Start instrument and VST3 hosting before M0?~~ **Answered 2026-11-27: build it** ("why can't you build the baseline MIDI and VST stuff yet?"). Built as D-044 | | |
 
 ## B. Unverified technical claims
 

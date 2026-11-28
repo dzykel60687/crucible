@@ -9,8 +9,13 @@
 // PLATFORM: any (Node 22 or later). The window's debugging port is WebView2's on Windows; the
 // same protocol is offered by WebKitGTK and WKWebView inspectors when the ports start.
 import { spawn } from 'node:child_process'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
-const [port, freezeScript, cdFile] = process.argv.slice(2)
+// The window's process id, the folder the folder picker "chooses" in this run (gui-test.ps1 puts
+// it, and the file to import, in the window's environment: see `pick` in app/src-tauri/src/main.rs),
+// and the window's session log.
+const [port, freezeScript, cdFile, appPid, saveRoot, logFile] = process.argv.slice(2)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const results = []
 const check = (name, ok, detail = '') => { results.push({ name, ok: !!ok, detail }); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`) }
@@ -97,21 +102,30 @@ for (let i = 0; i < 80; i++) {
   await sleep(125)
 }
 
-/** Watch the page for one action: what changed, and which commands went to the engine. */
+/** Watch one action: what changed on the page, and which commands went to the engine.
+ *  The commands are read from the session log, which gets a line for each as it starts. Until
+ *  2026-11-26 this replaced the page's `invoke` to count them, but Tauri makes that property
+ *  read-only, so the replacement never took and no command was ever seen: "Ctrl+C leaves the
+ *  clips alone" passed without testing anything. */
 await js(`(() => {
-  window.__t = { mutations: 0, commands: [] }
+  window.__t = { mutations: 0 }
   new MutationObserver((ms) => { window.__t.mutations += ms.length }).observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true })
-  const real = window.__TAURI_INTERNALS__.invoke
-  window.__TAURI_INTERNALS__.invoke = (cmd, args, opts) => {
-    if (cmd === 'exec' && args && !/^(transport\\.status|log\\.ui|audio\\.changes)/.test(args.line)) window.__t.commands.push(args.line)
-    return real(cmd, args, opts)
-  }
 })()`)
-const reset = () => js(`(() => { window.__t.mutations = 0; window.__t.commands.length = 0 })()`)
-const seen = () => js(`({ mutations: window.__t.mutations, commands: [...window.__t.commands] })`)
+let logFrom = 0
+const logSize = () => { try { return statSync(logFile).size } catch { return 0 } }
+const reset = async () => { logFrom = logSize(); await js(`window.__t.mutations = 0`) }
+const seen = async () => {
+  let text = ''
+  try { text = readFileSync(logFile).subarray(logFrom).toString('utf8') } catch { /* no log: no commands seen, and the checks that need them fail */ }
+  const commands = [...text.matchAll(/ INFO +> (.*)$/gm)].map((m) => m[1].trim()).filter((c) => !/^(transport\.status|log\.ui|audio\.changes|project\.info|project\.state|project\.sync|instrument\.status)/.test(c))
+  return { mutations: await js(`window.__t.mutations`), commands }
+}
 
 // ---------------------------------------------------------------- the test
 await sleep(1500)
+// The window remembers the folder last saved in. The test saves in a folder of its own, so it
+// puts back what the person had (step 19).
+const placeBefore = await js(`localStorage.getItem('crucible.place')`)
 check('the window starts empty: no demo song', (await project()).tracks.length === 0)
 check('the top bar names a real output device', /kHz|No audio output/.test(await js(`document.getElementById('dev-text').textContent`)), await js(`document.getElementById('dev-text').textContent`))
 // The test project (five tracks, nine clips, no sound) is made by typing its command into the
@@ -131,6 +145,10 @@ await click('#header-rows .tbtn.m')
 check('Mute in the track header mutes the track', (await project()).tracks.find((t) => t.id === first.id).mute === true && await js(`document.querySelector('#header-rows .tbtn.m').classList.contains('on')`))
 await click('#header-rows .tbtn.m')
 check('...and a second click unmutes it', (await project()).tracks.find((t) => t.id === first.id).mute === false)
+await reset()
+await click('#header-rows .tbtn.s')
+check('the test sees the commands the window sends (read from the session log)', (await seen()).commands.some((c) => c.startsWith('track.solo')), (await seen()).commands.join(' | ') || `none in ${logFile}`)
+await click('#header-rows .tbtn.s')
 
 // 2. The volume slider by the track and the mixer fader are one control.
 const hf = await rectOf('#header-rows .hfader')
@@ -248,41 +266,297 @@ check('Ctrl+C with text selected leaves the clips alone', !(await seen()).comman
 await js(`getSelection().removeAllRanges()`)
 await tab('mixer')
 
-// 10. A file at another rate: the window asks, and Convert places it (found by Dzyan 2026-11-25).
-if (cdFile) {
-  // Typed into the Console, so the window itself knows the project has a folder now.
-  const folder = `${process.env.TEMP}\\crucible-gui-test-${process.pid}`
+/// 10 to 16. Found by Dzyan on 2026-11-26, his first long session with real songs (D-042, D-043).
+const typeInConsole = async (text) => {
   await tab('console')
   await click('.console input')
-  await send('Input.insertText', { text: `project.new --discard; track.add Gtr --kind audio; project.save "${folder}"` })
+  await send('Input.insertText', { text })
   await key('Enter', 'Enter', 13, 0, '\r')
-  await sleep(800)
+  await sleep(600)
   await tab('mixer')
-  await key('i', 'KeyI', 73, 2)
-  await sleep(300)
-  await send('Input.insertText', { text: cdFile })
-  await key('Enter', 'Enter', 13, 0, '\r')
-  await sleep(1200)
+}
+/** What the window itself holds: asked through the page, so it is the page's own state. */
+const pageState = () => js(`window.__TAURI_INTERNALS__.invoke('exec', { line: 'project.info', since: null }).then((r) => ({ folder: r.state.folder, dirty: r.state.dirty, name: r.state.project.name, end: r.state.project.end ?? 0, tracks: r.state.project.tracks, clips: r.state.project.clips.length }))`)
+/** Where the timeline's view is: scroll in pixels, pixels per beat, and where the song's end is drawn. */
+const view = async () => { const [x, ppb, end] = (await js(`document.getElementById('timeline').dataset.view ?? ''`)).split(' ').map(Number); return { x, ppb, end } }
+const wheel = async (x, y, deltaY, modifiers = 0) => { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY, modifiers }); await sleep(120) }
+const dragWith = async (x0, y0, x1, y1, modifiers = 0) => {
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x0, y: y0, modifiers })
+  await mouse('mousePressed', x0, y0, { modifiers })
+  for (let i = 1; i <= 8; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x0 + (x1 - x0) * i / 8, y: y0 + (y1 - y0) * i / 8, button: 'left', buttons: 1, modifiers }); await sleep(15) }
+  await mouse('mouseReleased', x1, y1, { modifiers })
+  await sleep(250)
+}
+
+if (cdFile && saveRoot) {
+  // 10. Work first, save later: a project never saved takes a file, from the "Add audio" button
+  // on an empty audio track, chosen in the system's file picker (the test answers for the picker).
+  await typeInConsole('project.new --discard; track.add Gtr --kind audio')
+  const tl = await rectOf('#timeline')
+  const rowH = await js(`parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--row-h')) || 72`)
+  await reset()
+  await clickAt(tl.x + 14 + 62, tl.y + 30 + rowH / 2)
+  await sleep(1300)
+  check('"Add audio" on an empty audio track opens the file picker, with no path to type', (await seen()).commands.some((c) => c.startsWith('ui.pick_files')), (await seen()).commands.join(' | ').slice(0, 160))
   const asked = await js(`document.querySelector('#layer .dialog h2')?.textContent ?? ''`)
   check('importing a file at another rate asks whether to convert', /Convert/.test(asked), asked)
-  const problems = await popupProblems()
+  let problems = await popupProblems()
   check('...and that question is sound', problems.length === 0, problems.join('; '))
-  const buttons = await js(`[...document.querySelectorAll('#layer footer button')].map((b) => b.textContent)`)
-  const i = buttons.findIndex((b) => b.startsWith('Convert'))
-  if (i >= 0) await click('#layer footer button', i)
+  const answers = await js(`[...document.querySelectorAll('#layer footer button')].map((b) => b.textContent)`)
+  const convert = answers.findIndex((b) => b.startsWith('Convert'))
+  if (convert >= 0) await click('#layer footer button', convert)
   await sleep(1500)
   const clips = (await project()).clips
   check('Convert places the clip, converted', clips.length === 1 && clips[0].content.rate === 44100, `${clips.length} clips${clips[0] ? `, file at ${clips[0].content.rate} Hz` : ''}`)
+  let st = await pageState()
+  check('...in a project that was never saved: nothing asked for a folder', st.folder === null && st.dirty === true, `folder ${st.folder}`)
+
+  // 11. The position is minutes, seconds and tenths; playback stops at the end of the song, and
+  // Play from there starts over.
+  const position = () => js(`document.querySelector('.position .v').textContent`)
+  check('the position reads minutes:seconds.tenths', /^\d+:\d\d\.\d$/.test(await position()), await position())
+  await click('#t-play')
+  await sleep(700)
+  const playing = await status()
+  check('Play with the playhead past the end starts from the beginning', playing.playing === true && playing.seconds < 1.5, `${playing.playing ? playing.seconds.toFixed(2) + ' s' : 'not playing'}`)
+  // The window finds out by itself, from its own asking; a device can take a second to start.
+  for (let i = 0; i < 60 && await js(`document.getElementById('t-play').classList.contains('on')`); i++) await sleep(150)
+  check('playback stops by itself at the end of the song', !(await js(`document.getElementById('t-play').classList.contains('on')`)) && (await status()).playing === false, await position())
+  check('...with the playhead at the end (the file is 2.0 s long)', (await position()) === '0:02.0', await position())
+  if ((await status()).playing) await exec('transport.stop')
+
+  // 12. The end of the song can be dragged further out by its tab on the ruler.
+  let v = await view()
+  await dragWith(tl.x + v.end - v.x, tl.y + 22, tl.x + v.end - v.x + 220, tl.y + 22)
+  st = await pageState()
+  check('dragging the end tab on the ruler moves the song\'s end out', st.end > 4 * 960, `end at ${(st.end / 960).toFixed(2)} beats`)
+
+  // 13. Getting around: wheel, Ctrl+wheel out to the whole song, Ctrl+drag, the scroll bar.
+  const body = { x: tl.x + tl.w / 2, y: tl.y + 30 + rowH + 80 }
+  await typeInConsole('project.end 2000')
+  const before = await view()
+  await wheel(body.x, body.y, 360)
+  v = await view()
+  check('the wheel moves through time when the tracks all fit', v.x > before.x + 100, `scroll ${before.x} to ${v.x} px`)
+  for (let i = 0; i < 8; i++) await wheel(body.x, body.y, 600, 2)
+  v = await view()
+  check('Ctrl+wheel zooms out until the whole song is on screen', v.x === 0 && v.end > 0 && v.end <= tl.w, `the end is drawn at ${v.end} px of ${Math.round(tl.w)}, ${v.ppb} px per beat`)
+  for (let i = 0; i < 3; i++) await wheel(tl.x + 40, body.y, -600, 2)
+  const zoomed = await view()
+  await dragWith(body.x, body.y, body.x - 160, body.y, 2)
+  v = await view()
+  check('Ctrl+drag on empty space drags the view', Math.abs(v.x - zoomed.x - 160) <= 4, `scroll ${zoomed.x} to ${v.x} px`)
+  await dragWith(tl.x + 30, tl.y + tl.h - 5, tl.x + 30 + tl.w / 3, tl.y + tl.h - 5)
+  const barred = await view()
+  check('the scroll bar along the bottom moves through the song', barred.x > v.x + 200, `scroll ${v.x} to ${barred.x} px`)
+  await typeInConsole('project.end 0')
+
+  // 14. Save: a name, and a folder chosen with Browse. The audio goes along.
+  await key('s', 'KeyS', 83, 2)
+  await sleep(400)
+  check('Ctrl+S on a project never saved asks where, with a Browse button', /Save project as/.test(await js(`document.querySelector('#layer .dialog h2')?.textContent ?? ''`)) && await js(`!!document.querySelector('#layer [data-browse]')`))
+  await escape()
+  check('Escape closes it, with the cursor in the name box', !(await layerOpen()))
+  await key('s', 'KeyS', 83, 2)
+  await sleep(400)
+  problems = await popupProblems()
+  check('...and that dialog is sound', problems.length === 0, problems.join('; '))
+  await send('Input.insertText', { text: 'Test Song' })
+  await click('#layer [data-browse]')
+  await sleep(500)
+  check('Browse fills in the folder chosen', (await js(`document.querySelector('#layer [data-in]')?.value ?? ''`)) === saveRoot, await js(`document.querySelector('#layer [data-in]')?.value ?? ''`))
+  await click('#layer [data-go]')
+  await sleep(1500)
+  st = await pageState()
+  check('Save makes a folder named after the project there', st.folder === `${saveRoot}\\Test Song` && st.name === 'Test Song' && st.dirty === false, `${st.name} in ${st.folder}${st.dirty ? ', still unsaved' : ''}`)
+  check('...and takes the audio along', existsSync(`${saveRoot}\\Test Song\\project.json`) && existsSync(`${saveRoot}\\Test Song\\audio\\cd-44k1.wav`))
+
+  // 15. Effects from the track itself, and an editor with sliders, typed values and ranges.
+  const track1 = (await pageState()).tracks[0]
+  await click('#header-rows .tbtn.fx')
+  check('FX on a track with no effects opens the effect picker', /Add effect/.test(await js(`document.querySelector('#layer .dialog h2')?.textContent ?? ''`)))
+  await click('#layer [data-k="echo"]')
+  await sleep(700)
+  const ed = await js(`(() => { const e = document.querySelector('#layer .fx-editor'), d = document.querySelector('#layer .dialog'); if (!e) return null
+    return { sliders: e.querySelectorAll('input[type=range]').length, fields: e.querySelectorAll('.fxin').length, lists: e.querySelectorAll('select').length,
+      ranges: [...e.querySelectorAll('.fxnum small')].every((s) => / to /.test(s.textContent)), sideways: Math.max(e.scrollWidth - e.clientWidth, d.scrollWidth - d.clientWidth),
+      cut: [...e.querySelectorAll('.row > *')].filter((c) => c.getBoundingClientRect().right > e.getBoundingClientRect().right + 1).length } })()`)
+  check('the effect editor gives every number a slider, a value to type and its range', !!ed && ed.sliders > 0 && ed.sliders === ed.fields && ed.ranges, JSON.stringify(ed))
+  check('...and nothing in it runs off the side (Echo\'s Sync did)', !!ed && ed.sideways <= 0 && ed.cut === 0 && ed.lists >= 1, JSON.stringify(ed))
+  problems = await popupProblems()
+  check('...and it is sound', problems.length === 0, problems.join('; '))
+  const numbers = (await exec('fx.kinds'))[0].data.find((k) => k.name === 'echo').params.filter((p) => p.control.type === 'number')
+  const [typed, slid] = [numbers.find((p) => p.name === 'feedback') ?? numbers[0], numbers.find((p) => p.name === 'mix') ?? numbers.at(-1)]
+  const param = async (name) => (await pageState()).tracks.find((t) => t.id === track1.id).effects[0]?.params[name]
+  const want = Math.round((typed.control.min + typed.control.max) / 2) + 3
+  await click(`#layer .fxin[data-p="${typed.name}"]`)
+  await send('Input.insertText', { text: String(want) })
+  await key('Enter', 'Enter', 13, 0, '\r')
+  await sleep(500)
+  check('typing a value sets it, in place, with no second popup', (await param(typed.name)) === want && (await js(`document.querySelectorAll('#layer .dialog').length`)) === 1, `${typed.label}: ${await param(typed.name)}, wanted ${want}`)
+  const rail = await rectOf(`#layer input[type=range][data-p="${slid.name}"]`)
+  await clickAt(rail.x + rail.w * 0.85, rail.cy)
+  await sleep(500)
+  const set = await param(slid.name)
+  check('the slider sets it too, and the value beside it follows', set > slid.control.min + (slid.control.max - slid.control.min) * 0.7 && Number(await js(`document.querySelector('#layer .fxin[data-p="${slid.name}"]').value`)) === set, `${slid.label}: ${set}`)
+  await click('#layer footer [data-close]')
+  await click('#header-rows .tbtn.fx')
+  check('FX on a track with effects lists them', /Echo/.test(await js(`document.querySelector('#layer .menu')?.textContent ?? ''`)))
+  await escape()
 }
 
-// 11. Settings lists MIDI inputs (a keyboard must show up when plugged in).
+// 17. Settings lists MIDI inputs (a keyboard must show up when plugged in).
 await click('#gear')
 await sleep(1500)
 check('Settings, Audio has a MIDI inputs list', await js(`[...document.querySelectorAll('.settings h3')].some((h) => /MIDI/.test(h.textContent))`))
 await escape()
 
+// 20. Instruments (D-044). The launcher gave this window a plugin folder of its own holding the
+// test instrument (crates/crucible-test-synth: a real VST3 plugin, loaded like any other) and a
+// plugin list of its own, so this is the first scan on this "machine".
+{
+  const said = (title) => new Promise((done) => {
+    let out = ''
+    const p = spawn('pwsh', ['-NoProfile', '-File', fileURLToPath(new URL('./close-window.ps1', import.meta.url)), title])
+    p.stdout.on('data', (d) => { out += d })
+    p.on('close', () => done(out))
+  })
+  const inst = async () => (await exec('instrument.status'))[0].data
+  const mine = async () => (await inst()).instruments.at(-1)
+  const until = async (ok, tries = 60) => { let v; for (let i = 0; i < tries; i++) { v = await mine(); if (ok(v)) break; await sleep(250) } return v }
+  const last = (sel) => js(`document.querySelectorAll(${JSON.stringify(sel)}).length - 1`)
+  const menuItem = async (text) => click('#layer .menu button', await js(`[...document.querySelectorAll('#layer .menu button')].findIndex((b) => b.textContent.includes(${JSON.stringify(text)}))`))
+
+  await reset()
+  await click('[data-add="instrument"]')
+  let names = []
+  for (let i = 0; i < 80 && !names.length; i++) { await sleep(250); names = await js(`[...document.querySelectorAll('#layer .inst-pick [data-id] b')].map((b) => b.textContent)`) }
+  check('adding an instrument track opens the picker, which finds the plugins installed', names.includes('Crucible Test Tone'), names.join(', ') || await js(`document.querySelector('#layer .inst-pick')?.textContent.slice(0, 160) ?? 'no picker'`))
+  let problems = await popupProblems()
+  check('...and the picker is sound, with Scan again and Add a folder', problems.length === 0 && await js(`['#pl-scan', '#pl-folder'].every((s) => document.querySelector(s))`), problems.join('; '))
+  await click('#pl-find')
+  await send('Input.insertText', { text: 'zzz' })
+  await sleep(250)
+  const none = await js(`document.querySelectorAll('#layer .inst-pick [data-id]').length`)
+  await key('a', 'KeyA', 65, 2)
+  await key('Backspace', 'Backspace', 8)
+  await send('Input.insertText', { text: 'tone' })
+  await sleep(250)
+  check('...and its search narrows the list', none === 0 && await js(`document.querySelectorAll('#layer .inst-pick [data-id]').length`) === 1, `${none} for "zzz"`)
+  await click('#layer .inst-pick [data-id]')
+  let me = await until((v) => v?.state === 'loaded' && v.editor)
+  check('choosing a plugin loads it on the track', me?.state === 'loaded' && me.plugin?.name === 'Crucible Test Tone', JSON.stringify(me ?? null).slice(0, 220))
+  check('...the keyboards play it', me?.live === true)
+  check('...and its own window opens', me?.editor === true)
+  const s = await seen()
+  check('...all through the engine\'s commands', ['track.add', 'plugin.scan', 'instrument.set', 'instrument.show'].every((c) => s.commands.some((x) => x.startsWith(c))), s.commands.join(' | ').slice(0, 300))
+  await sleep(400)
+  check('the track shows its instrument and a lit keyboard button', await js(`(() => { const row = [...document.querySelectorAll('#header-rows .track')].at(-1); return row.querySelector('.tinst')?.textContent === 'Crucible Test Tone' && !!row.querySelector('.tbtn.k.on') })()`), await js(`[...document.querySelectorAll('#header-rows .track')].at(-1).querySelector('.row1').textContent`))
+
+  // The plugin's window is a real one: found by its title and closed the way its own X closes it.
+  const closed = await said('Crucible Test Tone - VST3')
+  me = await until((v) => v && !v.editor, 30)
+  check('the plugin\'s window is a real window, and closing it is noticed', /closed/.test(closed) && me?.editor === false, closed.trim() || 'no such window')
+  check('...and it floats above the main window (it has it as its owner)', /had an owner/.test(closed), closed.trim())
+
+  // A key at velocity 1 (56 dB below full scale: nothing to hear) answers through the device.
+  if (me) {
+    await inst()
+    await exec(`instrument.note #${me.track} 60 --velocity 1`)
+    await sleep(500)
+    const st = await inst()
+    await exec(`instrument.note #${me.track} 60 --off`)
+    const pk = st.instruments.at(-1).peak
+    check('a key makes the instrument sound through the audio device', st.output.open && pk && pk[0] !== null && pk[0] < -40 && pk[0] > -70, JSON.stringify({ output: st.output, peak: pk, silent: st.silent }).slice(0, 260))
+    await sleep(300)
+    const pk2 = (await inst()).instruments.at(-1).peak
+    check('...and stops when the key comes up', pk2 && pk2[0] === null, JSON.stringify(pk2))
+  }
+
+  // An export takes the instrument away from the live sound, tells it this is a render, and
+  // gives it back afterwards: the file holds the clip's note, and a key still sounds after.
+  if (me) {
+    const out = `${saveRoot}\\instrument.wav`.replaceAll('\\', '/')
+    // Soloed, so the file holds this track alone: one key at velocity 100 is 0.25 * 100 / 127 of
+    // full scale, -14.1 dBFS.
+    const made = await exec(`clip.add #${me.track} 0 2; note.add ${(await project()).next_clip_id} 64 0 1; track.solo #${me.track} on; project.export "${out}" --bits 32f --end 2`)
+    const exported = made.at(-1)
+    await exec(`track.solo #${me.track} off`)
+    check('an export holds the notes of a track whose instrument is loaded, at the level the plugin made', exported?.ok && Math.abs(exported.data.peak_dbfs + 14.1) < 0.2, (exported?.text ?? JSON.stringify(made.at(-1) ?? null)).slice(0, 200))
+    await inst()
+    await exec(`instrument.note #${me.track} 60 --velocity 1`)
+    await sleep(500)
+    const after = await inst()
+    await exec(`instrument.note #${me.track} 60 --off`)
+    const pk = after.instruments.at(-1).peak
+    check('...and the instrument plays live again afterwards', pk && pk[0] !== null && pk[0] < -40, JSON.stringify({ me: after.instruments.at(-1), out: after.output, silent: after.silent }).slice(0, 400))
+    const mineNow = after.instruments.at(-1)
+    check('hardly any of its blocks were lost to the plugin being busy', mineNow.blocks > 200 && mineNow.busy_blocks + mineNow.failed_blocks <= Math.max(4, mineNow.blocks / 200), `${mineNow.busy_blocks} busy and ${mineNow.failed_blocks} failed of ${mineNow.blocks}`)
+  }
+
+  await click('#header-rows .tinst', await last('#header-rows .tinst'))
+  const items = await js(`document.querySelector('#layer .menu')?.textContent ?? ''`)
+  check('the instrument button offers its window, a test note, the keyboard and removal', ['Open its window', 'test note', 'Keyboard and channel', 'Change instrument', 'Remove instrument'].every((t) => items.includes(t)), items.slice(0, 200))
+  await menuItem('Keyboard and channel')
+  problems = await popupProblems()
+  check('the keyboard question is sound and offers all keyboards and all channels', problems.length === 0 && await js(`document.querySelector('#kb-name')?.options[0].textContent === 'All keyboards' && document.querySelector('#kb-ch')?.options.length === 17`), problems.join('; '))
+  await escape()
+
+  await click('#header-rows .tbtn.k', await last('#header-rows .tbtn.k'))
+  me = await until((v) => v && !v.live, 20)
+  const lit = await js(`!![...document.querySelectorAll('#header-rows .track')].at(-1).querySelector('.tbtn.k.on')`)
+  await click('#header-rows .tbtn.k', await last('#header-rows .tbtn.k'))
+  const back = await until((v) => v?.live, 20)
+  check('the keyboard button takes the keyboards off the track and gives them back', me?.live === false && !lit && back?.live === true)
+
+  await click('#header-rows .tinst', await last('#header-rows .tinst'))
+  await menuItem('Remove instrument')
+  me = await until((v) => v?.state === 'none', 20)
+  await sleep(300)
+  const asks = await js(`[...document.querySelectorAll('#header-rows .track')].at(-1).querySelector('.tinst')?.textContent`)
+  await click('#timeline')
+  await key('z', 'KeyZ', 90, 2)
+  const again = await until((v) => v?.state === 'loaded', 40)
+  check('removing the instrument and undoing it brings it back, loaded', me?.state === 'none' && /Choose instrument/.test(asks ?? '') && again?.state === 'loaded', `${me?.state} | ${asks} | ${again?.state}`)
+}
+
 // 8. Nothing went wrong inside the page itself.
 check('no errors in the window\'s own code', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | ').slice(0, 200))
+
+// 18. Browse shows the system's own folder picker. Everywhere else in this test the picker is
+// answered for (see the top); here the real one is asked for, found by its title, and closed.
+{
+  const title = `Crucible GUI test ${process.pid}`
+  const reply = exec(`ui.pick_folder --ask --title "${title}"`)
+  let said = ''
+  const closer = spawn('pwsh', ['-NoProfile', '-File', fileURLToPath(new URL('./close-window.ps1', import.meta.url)), title])
+  closer.stdout.on('data', (d) => { said += d })
+  closer.stderr.on('data', (d) => { said += d })
+  const answer = await Promise.race([reply, sleep(20000).then(() => null)])
+  check('Browse shows the system\'s own folder picker (closed again by the test)', /closed/.test(said) && answer?.[0]?.ok === true && answer[0].data?.folder == null, said.trim().slice(0, 160) || 'the picker never answered')
+}
+
+// 19. Closing the window with unsaved changes asks first; "Don't save" then closes it (D-042).
+// Last, because the window is gone afterwards. The close is asked for the way the title bar's X
+// asks: from outside the page.
+await js(`(() => { const was = ${JSON.stringify(placeBefore ?? null)}; if (was === null || /crucible-gui-test-/.test(was)) localStorage.removeItem('crucible.place'); else localStorage.setItem('crucible.place', was) })()`)
+if (appPid) {
+  const alive = () => { try { process.kill(Number(appPid), 0); return true } catch { return false } }
+  await typeInConsole('track.add Unsaved')
+  spawn('pwsh', ['-NoProfile', '-Command', `[void](Get-Process -Id ${Number(appPid)}).CloseMainWindow()`])
+  let asked = ''
+  for (let i = 0; i < 40 && !/Save changes/.test(asked); i++) { await sleep(150); asked = await js(`document.querySelector('#layer .dialog h2')?.textContent ?? ''`).catch(() => '') }
+  check('closing the window with unsaved changes asks first', /Save changes/.test(asked) && alive(), asked || (alive() ? 'no question' : 'the window just closed'))
+  if (/Save changes/.test(asked)) {
+    const problems = await popupProblems()
+    check('...and that question is sound', problems.length === 0, problems.join('; '))
+    const answers = await js(`[...document.querySelectorAll('#layer footer button')].map((b) => b.textContent)`)
+    check('...with Save, Don\'t save and Cancel', ['Cancel', 'Save'].every((a) => answers.includes(a)) && answers.some((a) => a.startsWith('Don')), answers.join(' | '))
+    await click('#layer footer button', answers.findIndex((a) => a.startsWith('Don')))
+    for (let i = 0; i < 50 && alive(); i++) await sleep(150)
+    check('"Don\'t save" closes the window', !alive())
+  }
+}
 
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length} passed, ${failed.length} failed`)

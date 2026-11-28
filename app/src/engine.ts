@@ -9,7 +9,16 @@ export const PPQ = 960
 export type TrackKind = 'audio' | 'instrument'
 /** An insert effect on a track. Settings not in `params` are at the effect's default (`fx.kinds`). */
 export interface Insert { id: number; kind: string; bypass: boolean; params: Record<string, number>; file?: string }
-export interface Track { id: number; name: string; kind: TrackKind; gain_db: number; pan: number; mute: boolean; solo: boolean; effects: Insert[] }
+/** The plugin on an instrument track (D-044): known by class id on every machine, never by path. */
+export interface Instrument { class_id: string; name: string; vendor: string; version: string; state?: string }
+export interface Track {
+  id: number; name: string; kind: TrackKind; gain_db: number; pan: number; mute: boolean; solo: boolean; effects: Insert[]
+  instrument?: Instrument
+  /** Which MIDI keyboard may play the track: text its name contains. Absent: any. */
+  input?: string
+  /** MIDI channel 1 to 16. Absent or 0: all. */
+  input_channel?: number
+}
 export interface Note { pitch: number; start: number; length: number; velocity: number }
 /** Audio: `frames` and `rate` are 0 for a placeholder with no file (the demo song). */
 export type Content = { kind: 'audio'; source: string; source_length: number; frames: number; rate: number } | { kind: 'midi'; notes: Note[] }
@@ -17,6 +26,8 @@ export interface Clip { id: number; track: number; name: string; start: number; 
 export interface Project {
   format: number; name: string; sample_rate: number; tempo_bpm: number; time_signature: [number, number]
   master_gain_db: number; tracks: Track[]; next_track_id: number; clips: Clip[]; next_clip_id: number
+  /** Where the song ends, in ticks, if it was moved past the last sound (D-043). 0 = at the last sound. */
+  end?: number
 }
 export interface State { project: Project; folder: string | null; dirty: boolean; undo: string | null; redo: string | null; journal: boolean; revision: number }
 export interface Reply { ok: boolean; command: string; text?: string; data?: any; code?: string; message?: string; title?: string; help?: string }

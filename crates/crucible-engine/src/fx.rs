@@ -207,7 +207,7 @@ fn fx_file(e: &mut Engine, a: &Args) -> Result<Reply, DawError> {
     if source.contains(['/', '\\']) || source.starts_with('.') {
         return Err(DawError::new(Code::BadArgument, format!("'{source}' should be a file name in the audio folder, as audio.import reported it")));
     }
-    let folder = e.folder.clone().ok_or_else(|| DawError::new(Code::ProjectNotSaved, "the project has no folder yet"))?;
+    let folder = e.work_folder()?;
     let i = check_ir(&folder.join(super::audio::AUDIO_DIR).join(&source), e.project.sample_rate)?;
     e.project.tracks[t].effects[s].file = Some(source.clone());
     let what = match i.channels { 1 => "mono", 2 => "stereo", _ => "true stereo" };

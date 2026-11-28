@@ -10,3 +10,11 @@ vst3-host = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 crucible-diagnostics = { workspace = true }
+
+# PLATFORM: Windows only, for src/editor_window.rs (seam 2). The version the other crates use.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+# The test instrument (D-044). Depending on it makes cargo build the plugin before these tests run.
+crucible-test-synth = { path = "../crucible-test-synth" }

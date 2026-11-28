@@ -61,8 +61,9 @@ When two of these conflict, the lower number wins. Details: `docs/01-vision-and-
    evidence (OS error number, path, device or plugin name) in its message. Programs start a session
    log and end with `crucible_diagnostics::finish`. New code means `crucible codes --markdown` regenerates the
    table in `docs/11-error-codes.md`. When Dzyan reports a problem, ask for the report file first
-   (Settings, Diagnostics, Create report file; or `crucible report`). The log itself is one file
-   beside the program, `crucible-app.log`, started afresh each run.
+   (Settings, Diagnostics, Create report file; or `crucible report`). The log itself is one file,
+   `crucible-app.log`, started afresh each run: in `C:\Program Files\Crucible\logs` for the
+   installed program, beside the program for a build (D-037).
    The log is a full record of a session (D-037): commands and their outcomes are logged for
    you; anything the window does that is not a command goes through `trail()` in
    `app/src/trail.ts`; anything new that happens behind the scenes (a device opened, a

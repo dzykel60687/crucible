@@ -3,7 +3,7 @@
 // answers the playhead is carried forward by the screen's clock, so it moves every frame without
 // a command per frame.
 import { exec } from './engine'
-import { changed, run, state, toast } from './store'
+import { changed, redraw, run, songEnd, state, toast } from './store'
 
 /** What the transport shows. View state only: the engine holds the truth. */
 export const tp = {
@@ -19,7 +19,7 @@ export const tp = {
 }
 
 type Status = {
-  playing: boolean; beat: number; dropouts: number; error: string | null; stopped_because?: string | null
+  playing: boolean; beat: number; dropouts: number; error: string | null; stopped_because?: string | null; ended?: boolean
   peak: [number | null, number | null]
   tracks: { id: number; peak: [number | null, number | null] }[]
   device: { buffer_frames: number; buffer_ms: number; device: string; sample_rate: number; format: string }; driver: string; notes: string[]
@@ -37,6 +37,14 @@ let seeking = 0, polling = false, toldError = false
 const fresh = new Map<number, [number, number]>()
 
 const lin = (db: number | null) => (db === null ? 0 : Math.pow(10, db / 20))
+
+/** A level from somewhere other than playback: an instrument played while the song is stopped. */
+export function showLevel(id: number, l: number, r: number) {
+  if (l <= 0 && r <= 0) return
+  const was = fresh.get(id) ?? [0, 0]
+  fresh.set(id, [Math.max(was[0], l), Math.max(was[1], r)])
+  redraw()
+}
 const beatArg = (b: number) => +Math.max(0, b).toFixed(6)
 
 export async function togglePlay() {
@@ -47,7 +55,9 @@ export async function togglePlay() {
     await run('transport.stop', { quiet: true })
     return
   }
-  const from = tp.pos
+  // At the end of the song (where playback last stopped by itself), Play starts over.
+  const end = songEnd()
+  const from = end > 0 && tp.pos >= end - 1e-6 ? 0 : tp.pos
   const r = await run(`transport.play --from ${beatArg(from)}`)
   const reply = r.at(-1)
   if (!reply?.ok) return
@@ -74,10 +84,12 @@ async function poll() {
     try {
       const d = (await exec('transport.status')).replies[0]?.data as Status | undefined
       if (!d?.playing) {
-        // The engine stopped by itself: another project was opened, or the device went away.
+        // The engine stopped by itself: the song ended (D-043, no message for that), another
+        // project was opened, or the device went away.
         tp.playing = false
         device = null
-        if (d?.stopped_because) toast('info', 'Playback stopped', d.stopped_because)
+        if (d?.ended && typeof d.beat === 'number') tp.pos = expected = d.beat
+        else if (d?.stopped_because) toast('info', 'Playback stopped', d.stopped_because)
         changed()
         break
       }
@@ -128,7 +140,7 @@ export function advance(dt: number) {
   const fall = Math.exp(-dt * 9), hold = Math.exp(-dt * 1.5)
   const idsSeen = new Set<number>([0, ...state.project.tracks.map((t) => t.id)])
   for (const id of idsSeen) {
-    const [l, r] = tp.playing ? fresh.get(id) ?? [0, 0] : [0, 0]
+    const [l, r] = fresh.get(id) ?? [0, 0]
     const lv = tp.levels.get(id) ?? { l: 0, r: 0, pl: 0, pr: 0 }
     lv.l = Math.max(l, lv.l * fall); lv.r = Math.max(r, lv.r * fall)
     lv.pl = Math.max(lv.l, lv.pl * hold); lv.pr = Math.max(lv.r, lv.pr * hold)

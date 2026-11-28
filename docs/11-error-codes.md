@@ -29,7 +29,7 @@ sent anywhere by itself.
 
 | What | Where | Notes |
 |---|---|---|
-| Session log | `<program>.log` **beside the program**: `crucible-app.log` next to `crucible-app.exe`, `crucible.log` next to `crucible.exe`. Installed (0.0.3 on): `%LOCALAPPDATA%\Programs\Crucible\crucible-app.log` | Written line by line as things happen, started afresh on every run. The run before is kept once as `<program>.previous.log`. Where the program folder cannot be written (an older install under Program Files), `%LOCALAPPDATA%\Crucible` instead. Settings, Diagnostics shows the path |
+| Session log | **Installed** (0.0.4 on): `C:\Program Files\Crucible\logs\crucible-app.log` (and `crucible.log` for the tool). **Run from a folder it can write** (a build, or the 0.0.3 per-user install): `<program>.log` beside the program | Written line by line as things happen, started afresh on every run. The run before is kept once as `<program>.previous.log`. The program tries its own folder first, then the `logs` folder the installer makes, then `%LOCALAPPDATA%\Crucible`. Settings, Diagnostics shows the path |
 | Crash dump | Beside the log, `<program>.dmp` (and `.previous.dmp`) | Only when the program crashes |
 | Problem report | From the window: the Desktop. From `crucible report`: the folder it was run from (`--out <folder>` to choose); the Desktop if that folder cannot be written | Machine check, audio output choice, and each program's log of this run and the run before, in one file. **This is the file to send** |
 | Audio output choice | `%LOCALAPPDATA%\Crucible\audio-output.json` | Per machine. Copied into the report |

@@ -155,7 +155,7 @@ export function audioHtml(): string {
     <h3>Inputs connected now</h3><div class="list">${d.inputs.map(row).join('') || '<div><span class="grow">None.</span></div>'}</div>
     <div class="sub">Recording is not built yet. Inputs are listed so you can see that they are detected.</div>
     <h3>MIDI inputs connected now</h3><div class="list">${d.midi_error ? `<div><span class="grow">${warn('Could not be listed')}<br><small>${esc(d.midi_error)}</small></span></div>` : d.midi.map((m) => `<div><span class="grow">${esc(m)}</span></div>`).join('') || '<div><span class="grow">None. Plug a keyboard in: it appears here by itself.</span></div>'}</div>
-    <div class="sub">Playing instruments from a keyboard comes with plugin hosting, which is not built yet. Keyboards are listed so you can see that they are detected.</div>
+    <div class="sub">Every keyboard here plays the instrument track whose keyboard button is lit. A track can be told to listen to one keyboard or one channel: click its instrument, then "Keyboard and channel". Keyboards are opened only while an instrument is loaded, so other programs can use them the rest of the time.</div>
     <h3>ASIO drivers</h3><div class="sub">${d.probed ? (d.asio.length ? esc(d.asio.join(', ')) : 'None installed on this computer.') : 'Checking…'}</div>
     <div class="sub">Crucible cannot see a program that holds a device through ASIO: ASIO goes around Windows.</div>`
 }

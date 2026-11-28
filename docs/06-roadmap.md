@@ -57,7 +57,8 @@ plugin windows behave inside a Tauri app?
   the browser; edits round-trip in 4 ms. Frame rate itself still needs a visible window.*
 - [ ] Thirty-two meters update sixty times a second, driven from the Rust side over the bridge.
 - [ ] A playhead moves smoothly, interpolated in the UI from engine timestamps.
-- [ ] The M0 plugin host is embedded: a plugin editor floats above the main window.
+- [ ] The M0 plugin host is embedded: a plugin editor floats above the main window. *Built
+  2026-11-27 (D-044); machine-checked with the test instrument; no real plugin seen yet.*
 - [ ] Keyboard focus moves correctly between the main window and the plugin window. Space bar still plays and stops.
 - [ ] Measured on the Lynx machine and on the laptop.
 - [ ] Dzyan has looked at the mockup and said what he likes and dislikes.
@@ -89,11 +90,14 @@ before M0 has passed.
 
 ## M3. MIDI and instruments
 
-- [ ] MIDI tracks, recording from all inputs, playback.
-- [ ] VST3 instruments in the render graph, with state saved in the project.
+- [ ] MIDI tracks, recording from all inputs, playback. *Built 2026-11-27 (D-044): clips' notes
+  play through the track's instrument, keyboards play it live (all of them, or one keyboard or
+  channel per track). Recording what is played into a clip: not yet.*
+- [ ] VST3 instruments in the render graph, with state saved in the project. *Built 2026-11-27
+  at Dzyan's request, before M0 (D-044). Not yet heard with a real plugin.*
 - [ ] A basic piano roll: add, move, resize, delete notes, velocity.
 - [ ] Plugin delay compensation.
-- [ ] Missing-plugin placeholders that preserve state.
+- [ ] Missing-plugin placeholders that preserve state. *Built 2026-11-27 (D-044).*
 - [ ] A project made on one machine opens correctly on the other two.
 
 ## M4. Editing and effects

@@ -2,10 +2,24 @@
 
 Update this file at the end of every session. Keep it short. Newest log entry on top.
 
-## Where things stand (as of 2026-11-26)
+## Where things stand (as of 2026-11-27)
 
-- **Phase:** M0. Step A done and verified on the dev workstation. Step B code written,
-  **untested with any real plugin**, waiting on Dzyan.
+- **Phase:** M0's question (does plugin hosting work with real plugins on Windows?) is now
+  answered by the window itself: instruments were built ahead of it at Dzyan's request (D-044).
+  **No real plugin has been loaded yet.** His home desktop (UMC202HD, Keyscape, free instruments
+  to come) is where it is first tried; nothing is tailored to Omnisphere or Keyscape (his word).
+- **Instruments and MIDI keyboards (D-044, 2026-11-27, in 0.0.4, not committed):** the picker
+  finds the VST3 instruments installed (scans by itself, then looks for new ones each time it
+  opens; "Add a folder" for others); an instrument track loads one, opens its window floating
+  above Crucible's, and the keyboards play it live, mixed in the audio callback; a keyboard
+  button per track moves the keyboards between tracks; a track can listen to one keyboard or
+  channel; clips' notes play through it and into exports; its settings are saved in the project
+  (`plugin-state/`, file format 6) and survive undo; a plugin missing on a PC is marked and its
+  settings kept. Tested against a real VST3 plugin built for the tests (`crucible-test-synth`).
+  Limits: one lock between a plugin's sound and its settings (a big instrument's save or window
+  can cost it a few ms of silence, counted in the log), loading freezes the window briefly, the
+  device stays held while an instrument is loaded, no MIDI recording, no VST3 effects, no delay
+  compensation.
 - **WASAPI exclusive mode works** (timing verified on the dev laptop's Realtek output, 3 ms
   buffer, zero dropouts, silence only). The step-B program can use it with `--exclusive`.
 - **Named Crucible** (D-023). **Command layer built** (D-022, decided): every action is a command;
@@ -38,15 +52,32 @@ Update this file at the end of every session. Keep it short. Newest log entry on
   **No ASIO stream has ever run**: this laptop has no ASIO driver. The Lynx is the first test.
 - **Released: 0.0.3** on GitHub (`v0.0.3`, pre-release, 2026-11-25): per-user installer
   (`%LOCALAPPDATA%\Programs\Crucible`, no admin, the log beside the program), unsigned, never goes
-  online (D-041). Never installed on any PC by Claude. An older 0.0.1 or 0.0.2 install (Program
-  Files) must be uninstalled first; later versions install over 0.0.3.
+  online (D-041). Never installed on any PC by Claude. **Dzyan rejected the per-user install
+  2026-11-26** (he moved it to Program Files and it failed: a per-user installer cannot write there).
+- **0.0.4, built, not yet committed or released (2026-11-26):** from his second session, with two
+  whole songs at 192 kHz, and a failed install.
+  - Installer: per machine again, `C:\Program Files\Crucible`, asks for admin; the log is in a
+    `logs` folder there that Users may write (D-037, part three). A 0.0.3 install is removed by
+    hand first.
+  - Work first, save later (D-042): an unsaved project takes files; New, Open and closing ask
+    Save / Don't save / Cancel; Save as has a name, a folder and Browse; Import and the "Add
+    audio" button on an empty audio track open Explorer's file picker; **Save as now takes the
+    audio along** (it never did); saving and importing no longer stop playback.
+  - Timeline (D-043): wheel and scroll bar through time, Ctrl+wheel out to the whole song,
+    Ctrl+drag (empty space) or middle button drags the view; the song has an end where playback
+    stops, with a tab to drag it out (`project.end`, file format 5); position reads `m:ss.t`.
+  - Effects (D-043): an FX button on each track; the editor has a slider, a typed value and the
+    range for every number, and nothing runs off the side.
+  - Memory (D-039): sound no clip uses is let go (his two songs held 1.1 GB after removal).
+  - The GUI test's command watching never worked (Tauri's `invoke` is read-only); it now reads
+    the session log. 69 checks, 81 unit tests pass. Carries the new logo and green.
 - **0.0.3 (2026-11-25, from his home-desktop test with a Behringer UMC202HD):** imported files stay
   as they are, MP3/FLAC and other rates play from memory (D-039); conversion offered instead of
   refused; ASIO finds the interface under its driver's name (D-040); MIDI keyboards listed; Ctrl+C
   copies selected text; the log records everything while testing, a line every second; the logo
   is an anvil (side on, after his reference picture); nothing goes online (D-041).
-- **Since 0.0.3, on `main`, not yet in an installer (2026-11-26):** the logo is his pick, the anvil
-  with spectrum sparks and a note (D-029); the accent is Excel's green `#21a366`.
+- **Since 0.0.3, on `main` (2026-11-26):** the logo is his pick, the anvil with spectrum sparks
+  and a note (D-029); the accent is Excel's green `#21a366`. In the 0.0.4 installer.
 - **Built-in effects** (D-033, 2026-11-23): Reverb (Room/Hall/Plate), IR Reverb (zero-latency
   convolution with his IR files), Delay and Echo, as track inserts edited by `fx.*` commands and
   from the mixer slots. Machine-tested (`crucible-dsp`); not yet heard. CPU budget: quality
@@ -54,7 +85,7 @@ Update this file at the end of every session. Keep it short. Newest log entry on
 - **Edits are fast on big projects** (D-032): change lists instead of the whole model, copy-on-write
   clips, commands queued in order and run off the window's main thread.
 - **Licence: GPL-3.0-or-later** (D-036, decided 2026-11-23): "totally open software". `LICENSE` at
-  the root, installed as `LICENSE.txt`. All 286 third-party crates are GPLv3-compatible; their
+  the root, installed as `LICENSE.txt`. All 269 third-party crates in the Windows build are GPLv3-compatible (counted 2026-11-26); their
   notices are in `THIRD-PARTY-NOTICES.txt` (`tools/third-party-notices.ps1` regenerates it). The
   ASIO SDK is used under its GPLv3 option, so nothing needs signing.
 - **Git:** **public** repo (since 2026-11-23, at his word) `github.com/dzykel60687/crucible`, branch `main`, commits under
@@ -66,9 +97,9 @@ Update this file at the end of every session. Keep it short. Newest log entry on
   with a fake crashing plugin.
 - **The log is a full record of a session** (D-037): every command with its outcome and timing,
   playback health and every dropout with its cause, the devices and their changes, what was
-  clicked and shown in the window, his own marks (F9), the commit of the build. It is **one file
-  beside the program**, `crucible-app.log`, started afresh each run, the run before kept as
-  `.previous.log`. **Settings, Diagnostics, Create report file** writes one file to the Desktop.
+  clicked and shown in the window, his own marks (F9), the commit of the build. It is **one file**,
+  `crucible-app.log`, started afresh each run, the run before kept as `.previous.log`: in
+  `C:\Program Files\Crucible\logs` for the installed program (0.0.4 on), beside the program for a build. **Settings, Diagnostics, Create report file** writes one file to the Desktop.
   Not yet used to diagnose a real problem from another PC.
 - **Built and staged:** `dist/m0/crucible.exe` and `dist/m0/m0-play.exe`, release builds with the C
   runtime linked in, so they copy to any Windows PC. Their `.pdb` files sit beside them so crash
@@ -80,11 +111,12 @@ Update this file at the end of every session. Keep it short. Newest log entry on
 
 | # | Blocker | His action |
 |---|---|---|
-| 1 | **Install 0.0.3 on the home desktop** | Released 2026-11-25. Uninstall the old Crucible first (Apps list); later versions install over it |
-| 2 | **Home desktop: ASIO on the UMC202HD, a 4-minute import, export, MIDI keyboard listed** | `docs/test-reports/2026-11-25-home-desktop-umc202hd.md`; then Settings, Diagnostics, Create report file, and send it |
+| 1 | **Install 0.0.4 on the home desktop** | Commit, push and release 0.0.4: yes or no. Then uninstall any old Crucible (Apps list) and install, keeping the folder it offers |
+| 2 | **Home desktop: 2026-11-26 changes, ASIO on the UMC202HD, then instruments with Keyscape, free instruments and the Axiom** | Close Reaper. `docs/test-reports/2026-11-26-second-session-changes.md`, `2026-11-25-home-desktop-umc202hd.md`, then `2026-11-27-instruments-and-keyboard.md`; then Settings, Diagnostics, Create report file, and send it |
+| 2a | **Three choices** (Q14 to Q16) | Ruler in minutes or bars; Ctrl+drag everywhere or empty space only; convert audio while playing (4x less memory) |
 | 3 | **The export that "plays no sound"** | Does `Crucible.wav` play in Reaper, or with Reaper closed? Its peak was +1.15 dBFS, so the file is not silent |
 | 4 | **Listen: playback and effects** | `docs/test-reports/2026-11-23-devlaptop-live-playback-and-asio.md` steps 1 to 5 |
-| 5 | **Lynx machine: ASIO and M0 (the gate for instruments and VST3)** | Same report steps 6 and 7, then `2026-11-20-M0-stepB-checklist.md` with Keyscape or Omnisphere |
+| 5 | **Lynx machine: ASIO, and Omnisphere when it is there** | Same report steps 6 and 7; then the instruments sheet there. The old `m0-play` checklist is optional now |
 | 6 | **Default driver: keep ASIO, exclusive, shared; or Shared first?** | Shared never silences other programs but is not bit-exact (D-038) |
 | 7 | **"GPLv3 or later", or version 3 only?** | Claude chose "or later" (D-036) |
 | 8 | **Proposed decisions** | D-030 to D-034, D-037, D-038; Q7 standing approval to commit and push |
@@ -96,14 +128,22 @@ machine (Q6); GUI feel of mouse editing, the five layouts and the piano roll.
 
 ## Next actions, in order
 
-1. Wait for Dzyan's listening and Lynx results (blockers 1 and 2). Fix what fails. Record results
-   in `07-hardware-and-testing.md` and the outcome of claims T3/T4 in `09-open-questions.md`.
-2. Playback follow-ups that need no hardware: loop playback; send effect-knob drags as they move
+1. Wait for Dzyan's results with real plugins and the Axiom (blockers 1 and 2). Fix what fails.
+   Record results in `07-hardware-and-testing.md` (the plugin table) and the outcome of claims
+   T3/T4 in `09-open-questions.md`. If he hears the lock's gaps, start the processor/editor split
+   (D-044).
+1a. Instruments, next in M3: record what the keyboard plays into a MIDI clip; plugin delay
+   compensation; then VST3 effects as inserts (M4).
+2. Playback follow-ups that need no hardware: loop playback; send effect-slider drags as they move
    (today one command on release) with undo grouping; hold the device open between stop and play.
+   From 2026-11-26, each waiting on his answer or a later milestone: hold converted audio at the
+   file's own rate and convert while playing (Q16, about four times less memory at 192 kHz); a
+   ruler in minutes and seconds (Q14); crash recovery for a project never saved (D-042; a must
+   once recording exists); draw the song's end where the effects' tails end, not at the last clip.
 3. After his first listen: the quality-for-CPU candidates in D-033 (modulate all 16 reverb lines,
    oversample the tape saturation), judged by ear.
 4. Record (audio input, latency-compensated) and the metronome: M2's remaining transport work.
-5. Instruments and monitoring (M3) render inside the callback, not the feeder (D-034).
+5. Input monitoring renders inside the callback, as instruments now do (D-044).
 
 6. For every later release, in this order: bump `version` in `Cargo.toml`,
    `app/src-tauri/tauri.conf.json`, `app/package.json` and `app/package-lock.json`; re-run
@@ -118,8 +158,8 @@ machine (Q6); GUI feel of mouse editing, the five layouts and the piano roll.
 9. Controls that left the window come back with their engine side: record and arm, loop,
    metronome, loudness, mono, reference A/B, instrument and plugin pickers, MIDI settings.
 
-Plugins in the engine still wait for M0 to pass on real hardware. Every new feature starts as a
-command row in a table, then gets its GUI.
+Instruments are in the engine (D-044) though no real plugin has been tried. Every new feature
+starts as a command row in a table, then gets its GUI.
 
 ## How to build and test
 
@@ -129,7 +169,7 @@ are in the repo, `third-party/asiosdk`. `.cargo/config.toml` points at both; the
 and `LIBCLANG_PATH` environment variables override. Without libclang the build fails in
 `asio-sys`. The downloaded zips are kept in `..\crucible-sdk\downloads`.
 
-Installer (WiX is fetched by Tauri on first use; per-user since 0.0.3): `cargo build --release -p crucible-cli`, then
+Installer (WiX is fetched by Tauri on first use; per machine, except 0.0.3 which was per user): `cargo build --release -p crucible-cli`, then
 `cd app && npx tauri build --config src-tauri/tauri.bundle.json` writes
 `target/release/bundle/msi/Crucible_<version>_x64_en-US.msi`. It installs `crucible-app.exe`, and the
 `crucible.exe` command-line tool in a `tools` folder, to Program Files, adds a Start menu entry and an uninstaller, and
@@ -177,11 +217,12 @@ After adding an error code: `cargo run -p crucible-cli -- codes --markdown` and 
 | Path | What | Verified how |
 |---|---|---|
 | `crates/crucible-audio-io` | SEAM 1. `wasapi_endpoints.rs`: the device list with rates and users, plug detection. Lists audio devices in full via cpal (`audio.probe`). Exclusive mode via `wasapi`: capability probe, timing test, output stream. `output.rs`: one `open_output` for ASIO and shared mode (cpal) and exclusive. `convert.rs` float-to-device conversion (bit-exact with import) | Ran on dev workstation. Conversion unit-tested. Exclusive and shared streams played the demo song with 0 dropouts. **ASIO stream never run** (no driver here) |
-| `crates/crucible-midi-io` | SEAM 1. Lists MIDI inputs via midir | Ran; this machine has none |
-| `crates/crucible-plugin-host` | Finds `.vst3` bundles, probes each in a child process with a timeout. `plugin_paths` is SEAM 2 | Unit tests incl. simulated crash/hang; fake broken bundles |
+| `crates/crucible-midi-io` | SEAM 1. Lists MIDI inputs and opens them (`connect`) via midir | Ran; this machine has none |
+| `crates/crucible-plugin-host` | Finds `.vst3` bundles, probes each in a child process with a timeout. `catalog.rs`: the plugin list kept between runs, scans only what is new. `instance.rs`: one loaded plugin as a control half and an audio half (D-044). `plugin_paths` and `editor_window` are SEAM 2 | Unit tests incl. simulated crash/hang; the test instrument loaded, played, saved, restored, made busy |
+| `crates/crucible-test-synth` | A real VST3 instrument for tests only (sine per key, one setting, sustain pedal, a window). Never shipped | Through the host tests and the GUI test |
 | `crates/crucible-diagnostics` | Error codes (`codes.rs`), session log (`session.rs`), the build's commit (`build.rs`), machine facts (`system.rs`), Windows crash handler and minidumps (`platform_windows.rs`, the crate's only OS code) | Unit tests, including a child process that really crashes. End-to-end with a fake crashing VST3 (see session log) |
 | `crates/crucible-project` | Project model as plain data; atomic save; load with validation; crash journal | Unit tests: round trip, foreign folder refused, newer format refused, damaged file refused, journal |
-| `crates/crucible-engine` | `command.rs`: command tables, parser, canonical text form. `lib.rs`: project and track commands, undo, redo, history, journal replay, `sync` change lists. `clips.rs`: clip, note, clipboard commands. `audio.rs`: import, place, peaks, mixer, `render`, export. `fx.rs`: effect commands. `play.rs`: live playback (feeder thread, queue, callback), `transport.*`, `audio.output`, the `AUDIO` log lines. `trail.rs`: command outcomes in the log, `mark`, `log.ui`, `log.snapshot` (D-037). `devices.rs`: `audio.devices`, `audio.changes` (D-038) | Unit tests (31), CLI, browser, real devices |
+| `crates/crucible-engine` | `command.rs`: command tables, parser, canonical text form. `lib.rs`: project and track commands, undo, redo, history, journal replay, `sync` change lists. `clips.rs`: clip, note, clipboard commands. `audio.rs`: import, place, peaks, mixer, `render`, export. `fx.rs`: effect commands. `play.rs`: live playback (feeder thread, queue, callback), `transport.*`, `audio.output`, the `AUDIO` log lines. `trail.rs`: command outcomes in the log, `mark`, `log.ui`, `log.snapshot` (D-037). `devices.rs`: `audio.devices`, `audio.changes` (D-038). `rack.rs`: instruments and keyboards (D-044): `plugin.*`, `instrument.*`, `track.live`, `track.input`; `play.rs` `Stage` mixes them in the device callback | Unit tests (42), CLI, browser, real devices |
 | `crates/crucible-dsp` | Built-in effects: `reverb.rs` (FDN), `convolve.rs` (IR Reverb), `delay.rs` (Delay/Echo), `filter.rs`, `math.rs` (deterministic exp/ln/sin), parameter tables in `lib.rs` | 15 unit tests (decay per band, convolution against direct, timing, no allocation, determinism, block-size independence including going idle, tail hand-over); CPU bench with `--ignored` |
 | `crates/crucible-cli` | The `crucible` binary. Host commands (help, version, codes, logs, report, diag, audio.devices, audio.test, midi.inputs, plugin.scan, run) joined with the engine's. Modes: one command, `-c`, `run`, `shell`, `--json`, `--project` | Ran on dev workstation, including each error path |
 | `app/src-tauri` | The window `crucible-app.exe`: Tauri 2 shell, one `exec` command, help for engine commands, the `report` command (starts `crucible.exe report`), a watchdog for slow commands, window events into the log | Built release; driven through WebView2's debugging port with real clicks and keys |
@@ -213,13 +254,77 @@ the 2026-11-21 batch (mouse editing, layouts, fonts, green, research). Ask befor
 | LLVM 23.1.6 | unpacked (not installed) in `..\crucible-sdk\llvm`, 2026-11-23 |
 | ASIO SDK 2.3.4 | host part in the repo (`third-party/asiosdk`); the full SDK is unpacked in `..\crucible-sdk\asio`, unused by the build |
 | WiX 3.14.1 | in `%LOCALAPPDATA%\tauri`, fetched by Tauri 2026-11-23 |
-| VST3 plugins | none |
+| VST3 plugins | none installed (the test instrument is built in `target`, laid out in a temp folder by the tests) |
 | Audio | Realtek built-in, Jabra headset (default), Thunderbolt dock. No ASIO |
 | MIDI | none |
 
 Related: `..\music-editor` is Dzyan's own MIT Rust audio editor with reusable DSP and loudness code.
 
 ## Session log
+
+### 2026-11-27, instruments and MIDI keyboards before M0 (Claude Opus 5.5 and Fable 5.2)
+
+He asked why the basic MIDI and VST parts could not be built yet: plug in the keyboard and use it
+on any track; browse for and add VST instruments, found on the PC by themselves. Mid-turn: the
+test PC is the home desktop with the UMC and only Keyscape; he will try free instruments; do not
+tailor it to Omnisphere or Keyscape. Built as D-044 (Q17 answered).
+
+- **Test instrument** `crates/crucible-test-synth` (real VST3, `vst3` crate), so hosting is tested
+  by machine on a laptop with no plugins.
+- **Host**: `catalog.rs` (scan, kept list, new-only rescans, extra folders), `instance.rs`
+  (control half on the main thread, audio half that tries 0.15 ms for the plugin then gives the
+  block up, keeping its keys: a first version dropped them, found while chasing one flaky GUI
+  run), `editor_window.rs` (owner window).
+- **Engine**: `rack.rs` (plugins follow the project after every command; settings kept across
+  removal for undo; save writes `plugin-state/`; keyboards opened while an instrument is loaded;
+  `track.live`, `track.input`), project format 6 (`Track::instrument`, `input`, `input_channel`).
+  `play.rs` reworked: the device and its callback (`Rig`, `Stage`) outlive Play and Stop while an
+  instrument is loaded; the callback adds the instruments, mixed there from their own mixer,
+  to the feeder's queue; mixers and queues are handed over and freed without the audio thread
+  waiting or freeing. `audio.rs`: `mixer_for(Part)`, instrument strips, export pauses them and
+  switches plugins to offline.
+- **Shells**: the window gives the engine Tauri's main thread, its window handle, a scan child
+  (`crucible-app --probe-plugin`) and a 30 Hz look-in for plugin windows; `plugin.scan` runs
+  outside the engine lock. The CLI's own `plugin.scan` was replaced by the engine's.
+- **Window**: `instruments.ts` (picker with search, Scan again, Add a folder; instrument menu;
+  keyboard and channel dialog; status ten times a second, meters while stopped); each instrument
+  track shows its plugin and a keyboard button.
+- Verified by machine: 88 unit tests, clippy clean, 88 GUI checks (19 new) on the release build,
+  four clean runs in a row; the CLI scans, loads and exports with the test instrument.
+  One GUI run in six had a silent key after an export, before the lost-keys fix; not seen since;
+  cause not proven.
+- Not verified: Keyscape, any free plugin, the Axiom, anything audible.
+- Not committed: 0.0.4 still waits for his yes; it now carries this too.
+
+### 2026-11-26, his second session: installer, saving, getting around, effects, memory: 0.0.4 (Claude Opus 5.5, then Fable 5.2)
+
+He installed 0.0.3 (it failed in Program Files), then worked with a 4-minute and a 9-minute MP3
+at 192 kHz in a build of `main`, and sent thirteen messages of findings while this was built.
+
+- **Installer** (D-037 part three): per machine again (`InstallScope="perMachine"`,
+  `ProgramFiles64Folder\Crucible`, files as their own key paths), plus a `logs` folder Users may
+  write (`MsiLockPermissionsEx`, InstallerVersion 500); `log_dirs` looks there. Version 0.0.4.
+- **Engine**: `scratch.rs` (an unsaved project's folder, D-042); `project.save` copies the audio
+  when the folder is new and re-points the sound and waveforms held in memory; `project.end` and
+  the song's end in playback (`transport.status` stops there and says `ended`), file format 5;
+  `release_unused` lets go of sound no clip uses; only New and Open stop playback now.
+- **Window shell**: `ui.pick_folder` and `ui.pick_files` (the `rfd` crate), answered outside the
+  engine lock; the page may close its own window (`core:window:allow-destroy`) after asking.
+- **Window**: `saveAs`, `openProject`, `newProject`, `confirmUnsaved` in `dialogs.ts`; the effect
+  editor rewritten in `effects.ts`; timeline scroll bar, pan, zoom-to-fit, end tab, "Add audio"
+  button in `timeline.ts`; FX button and `m:ss.t` position in `main.ts`.
+- **GUI test**: its command watching had never worked (it replaced Tauri's `invoke`, which is
+  read-only), so "Ctrl+C leaves the clips alone" had tested nothing. It reads the session log
+  now, with a check that it sees commands. The pickers are answered through two environment
+  variables the test sets; one check asks for the real picker and closes it
+  (`tools/close-window.ps1`). 30 new checks, 69 in all.
+- Verified by machine: 81 unit tests, 69 GUI checks, clippy clean; the MSI's tables; the
+  permission text on a test folder; screenshots of the new dialogs looked at.
+- Not verified: installing it (Claude does not install on the build laptop), so the `logs`
+  folder's rights on a real install; anything audible; how the new gestures feel.
+- Told him plainly: there is no VST button because instruments are not hosted yet (M0 gate);
+  MIDI device and channel assignment is not built either; the 1.1 GB was the design, not a leak.
+- Not committed or released: waiting for his yes.
 
 ### 2026-11-26, the new logo and Excel green (Claude Opus 5.5)
 

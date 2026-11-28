@@ -5,7 +5,8 @@
 //!   starts it afresh (Dzyan, 2026-11-25). The run before is kept once, as
 //!   `crucible-app.previous.log`: after a crash the next start would otherwise erase the very
 //!   log that explains it. Where the program's folder cannot be written (Program Files), the
-//!   log goes to the per-user folder instead ([`data_dir`]).
+//!   log goes to the `logs` folder the installer makes there, and failing that to the per-user
+//!   folder ([`log_dirs`]).
 //! - **Write-through.** Every line goes to the file as it happens, not when the program
 //!   exits. If a plugin crashes the process, the log still holds everything up to the crash.
 //! - **Header first.** Program build, command line, computer, OS, CPU and memory come before
@@ -52,11 +53,17 @@ pub fn data_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join("Crucible"))
 }
 
-/// The folders a log can be in, in the order they are tried: the program's own, then the
-/// per-user one.
+/// The folders a log can be in, in the order they are tried:
+/// 1. the program's own folder (a build, or any copy in a folder that can be written);
+/// 2. `logs` in it, then `logs` beside it: installed under Program Files the program cannot
+///    write its own folder, so the installer makes a `logs` folder there that it can (D-037, part
+///    three). The window program finds it in its folder, the `crucible` tool one folder up from
+///    `tools`;
+/// 3. the per-user folder.
 pub fn log_dirs() -> Vec<PathBuf> {
     let own = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
-    let mut dirs: Vec<PathBuf> = own.into_iter().chain(data_dir()).collect();
+    let logs = own.iter().flat_map(|d| [Some(d.join("logs")), d.parent().map(|p| p.join("logs"))]).flatten();
+    let mut dirs: Vec<PathBuf> = own.iter().cloned().chain(logs).chain(data_dir()).collect();
     dirs.dedup();
     dirs
 }

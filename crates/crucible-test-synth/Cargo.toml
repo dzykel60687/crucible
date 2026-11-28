@@ -1,0 +1,19 @@
+[package]
+name = "crucible-test-synth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Test fixture: a minimal VST3 instrument (sine tones) so plugin hosting is tested by machine. Never installed or shipped."
+
+# The cdylib is the plugin itself. The rlib lets tests depend on this crate, which makes cargo
+# build the plugin before they run, and gives them `bundle_into` to lay it out as a .vst3 bundle.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vst3 = "0.3"
+
+# PLATFORM: Windows only, for the editor's child window in src/platform_windows.rs.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

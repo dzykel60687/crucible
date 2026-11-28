@@ -640,6 +640,22 @@ beside the program there. `app/src-tauri/wix/main.wxs` is Tauri's own WiX templa
 change; an older per-machine install must be removed by hand first (Windows Installer will not
 upgrade across the two).
 
+**Part three, decided by Dzyan 2026-11-26:** "I don't like installer trying to install to user
+space." From 0.0.4 the installer is per machine again, in `C:\Program Files\Crucible`, and asks
+for admin. Program Files cannot be written by a program running as a normal user, so the log
+cannot sit right beside an installed program. He asked how other programs do it (most write
+elsewhere; services run with rights of their own; Steam opens its whole folder to everyone, which
+has been used to take PCs over) and took the middle way: the installer makes one folder,
+`C:\Program Files\Crucible\logs`, that anyone using the PC may write (SYSTEM and Administrators
+full control, Users modify, set with `MsiLockPermissionsEx` in `main.wxs`), and the log is
+`logs\crucible-app.log` there. The program files stay protected. The program looks in its own
+folder first (a build still logs beside itself), then `logs`, then `%LOCALAPPDATA%\Crucible`
+(`log_dirs` in `crucible-diagnostics`). Cost, accepted: every Windows user of that PC shares the
+one log and can read it. Rejected: making all of `Program Files\Crucible` writable, which lets
+any program replace `crucible-app.exe`. A 0.0.3 install (per user) is removed by hand first.
+Not verified by machine: the access rights on a real install (the permission text was checked on
+a test folder; Claude does not install on the build laptop).
+
 Verified by machine on 2026-11-23 (`docs/test-reports/2026-11-23-devlaptop-logging-and-report.md`).
 Not verified: a real problem diagnosed from a log sent from another PC.
 
@@ -746,6 +762,17 @@ the songs' rate; ASIO sets the interface to it.
 
 Not verified: his 4-minute songs on his drive (this laptop: a 16 s MP3 imports in 39 ms).
 
+**2026-11-26, his second session:** a 4-minute and a 9-minute MP3 in a project set to 192 kHz held
+377 MB and 751 MB, and Task Manager showed 1.1 GB, still held after both clips were removed ("gotta
+make sure our program isn't leaking memory like that"). Not a leak: it is this design at four
+times the songs' rate, and the sound was kept until another project was opened so that undoing a
+removal was instant. Changed: **sound that no clip uses any more is let go at once**
+(`release_unused` in `audio.rs`, an `AUDIO` log line says how much); an undone removal reads its
+file again when it next plays. **Proposed, not built:** hold the sound at the file's own rate and
+convert it while it plays, in the mixing thread (never the audio callback). His two songs would
+then hold about 270 MB instead of 1.1 GB at 192 kHz; the cost is converter work during playback
+and a second look at the bit-for-bit playback-equals-export test. Needs his yes.
+
 ## D-040. ASIO finds the interface by its other name; MIDI keyboards are listed. *Found by Dzyan 2026-11-25.*
 
 - His UMC202HD is "OUT 1-2 (BEHRINGER UMC 202HD 192k)" to Windows and has another name to its
@@ -776,13 +803,175 @@ contained." So:
 - **Updating = running the newer installer.** It replaces the older version in place (Windows
   Installer major upgrade: same upgrade code, higher version number; `MajorUpgrade` in
   `app/src-tauri/wix/main.wxs`). Projects, settings and per-machine audio choices are kept. The
-  one exception is 0.0.2 to 0.0.3, which moves from a per-machine to a per-user install: uninstall
+  exception is 0.0.3, the one per-user install (D-037, part three): going to or from it, uninstall
   the old one once.
 - Rejected: the in-program updater (network); a "check for updates" button (network); embedding
   WebView2's offline installer (about 130 MB more per installer, and a download when building).
 
 Not verified by machine: an in-place upgrade from one installed version to the next (Claude does
 not install on the build laptop). It is the installer's standard upgrade path, configured as above.
+
+## D-042. Work first, save later; folders and files are chosen in Explorer. *Asked for by Dzyan 2026-11-26; the design is Claude's, Proposed.*
+
+He dragged a song into a new project and was told to save first: "most programs let you play
+around, and only prompt for saving when you try to close or exit". And: saving "should be option
+to Browse like other programs", importing "should not make you import as path", an empty audio
+track should offer to add audio.
+
+Why it asked: imported files are copied into the project's `audio` folder (D-039), and a project
+never saved had no folder.
+
+Now:
+- **A project never saved has a folder of its own** until the first save:
+  `%LOCALAPPDATA%\Crucible\unsaved\<process>-<n>`, made on the first import
+  (`crucible-engine/src/scratch.rs`). Import, IR files, playback and export work as in a saved
+  project. Saving copies its audio to the folder chosen and removes it; so do New, Open, "Don't
+  save" and closing. A lock file marks a folder in use: one left by a crash is removed the next
+  time an unsaved project needs one, one that belongs to another running Crucible is kept.
+- **Save takes the audio along.** Saving to another folder (the first save, Save as) copies the
+  `audio` folder. Before this, Save as wrote only `project.json` and the copy opened with every
+  clip missing: a fault since audio import existed, found while building this.
+- **New, Open and closing the window ask** Save, Don't save or Cancel when there are unsaved
+  changes. Closing used to lose them without a word; New used to fail with an error.
+- **Browse.** Save as is a name and a "Save in" folder with a Browse button; Open has one too;
+  Import (Ctrl+I, the menus, the "Add audio" button on an empty audio track, an IR Reverb's file)
+  goes straight to the file picker. The pickers are the system's own, through the `rfd` crate
+  (MIT), as two commands the window shell answers, `ui.pick_folder` and `ui.pick_files`, so they
+  are in the log like everything else (D-022, D-037). The folder last used is remembered on that
+  computer.
+- **Saving and importing no longer stop playback.** Only New and Open do.
+
+Cost: a file imported before the first save is copied twice (into the unsaved folder, then into
+the project). Not built: crash recovery for a project never saved (the journal still starts at
+the first save); today such a folder holds only copies of files that exist elsewhere. **When
+recording arrives, an unsaved project's folder will hold the only copy of a take, and must then
+be offered back after a crash, not removed.**
+
+Rejected: pointing clips at the files where they are until the first save (two kinds of clip,
+and the IR Reverb and the journal need a folder anyway); Tauri's dialog plugin (a layer over the
+same `rfd`, plus a JavaScript package and page permissions).
+
+Verified by machine: unit tests (an unsaved project's audio goes along on save, Save as makes a
+whole copy, discard removes the folder, a folder in use is kept and a left one removed); GUI test
+(import into an unsaved project from the "Add audio" button, Save with Browse, the audio in the
+saved folder, the real Explorer picker appearing, the close question, "Don't save").
+
+## D-043. Getting around the timeline, the song's end, effects from the track. *Asked for by Dzyan 2026-11-26; the details are Claude's, Proposed.*
+
+From his first session with whole songs (4 and 9 minutes, at 192 kHz):
+
+- **Scrolling.** The second song ran off the screen and nothing obvious reached it (Shift+wheel
+  did, unannounced). Now: the wheel moves through the tracks when they do not all fit and through
+  time when they do; Shift+wheel always through time; a scroll bar along the bottom; Ctrl+wheel
+  zooms out until the whole song is on screen (it stopped at 3 pixels per beat, too far in for a
+  long song); the middle button drags the view from anywhere. **Ctrl+drag drags the view on empty
+  space only**: on a clip, Ctrl+drag already copies the clip (D-027). He asked for Ctrl+drag; if
+  he wants it everywhere, copy needs another key. His call.
+- **The song has an end** ("the wall"). Playback stops there instead of running on in silence:
+  after the last clip of any kind, plus what the effects still ring out. A tab on the ruler drags
+  the end further out (`project.end`, saved in the project, file format 5); new or longer clips
+  push it out by themselves; nearer than the last clip means "at the last sound" again. Past the
+  end the timeline is dimmed. Play with the playhead at the end starts over. A whole-song export
+  runs to the end he set. The line is drawn at the last clip; with a reverb or echo, playback
+  rings on a little past it.
+- **The position reads minutes:seconds.tenths** and nothing else ("arbitrary position numbers are
+  not useful"). The ruler still counts bars: open question Q below.
+- **FX on the track itself**, where the pan readout was (pan stays on the mixer strip): the
+  track's effects, and adding one.
+- **The effect editor**: every number is a slider with its value beside it, to drag or type, and
+  its range shown; nothing opens a second popup; a choice with more than four options is a list,
+  so nothing runs off the side (Echo's Sync did). A number changes in place: the control in hand
+  is never replaced. The command still runs when the slider is let go, not while it moves (live
+  changes with undo grouping are a listed follow-up).
+- **Sound no clip uses is let go** (D-039, appended there).
+
+Verified by machine: GUI test checks for each of these (69 in all). Not verified: how any of it
+feels in the hand, and anything audible.
+
+## D-044. Instruments and MIDI keyboards, built before M0. *Asked for by Dzyan 2026-11-27; the design is Claude's, Proposed.*
+
+He asked why the basic MIDI and VST parts could not be built yet: plug in a keyboard and have it
+found and put on any track; browse for and add a VST3 instrument on any instrument track; find
+the instruments installed on the PC by itself. And: the test machine is the home desktop (UMC202HD,
+Keyscape only for now), he will try other free instruments too, so nothing is to be tailored to
+Omnisphere or Keyscape. That answers Q17: build it now. M0 was the gate because the plugin host
+library (vst3-host) had never been run with a real plugin on Windows; that risk is still there,
+and now his first test of instruments is also the M0 test.
+
+**What was built:**
+
+- **Plugin list** (`crucible-plugin-host/src/catalog.rs`): the standard VST3 folders, plus any
+  folder he adds ("Add a folder" in the picker, `plugin.folder`), are searched; each new or
+  changed plugin is asked what it is in a child process with a time limit (a plugin that crashes
+  or hangs costs only its own row); the answers are kept in `plugins.json` in the per-user folder.
+  The picker scans by itself the first time and then looks for new plugins every time it opens
+  (unchanged plugins are not asked again, so this is quick). Commands: `plugin.list`,
+  `plugin.scan`, `plugin.folder`.
+- **An instrument on a track** (`crucible-engine/src/rack.rs`): `instrument.set <track> <name or
+  class id or .vst3 path>`, `instrument.clear`, `instrument.show`/`hide` (its own window),
+  `instrument.status`, `instrument.note` (a test key). The project stores the plugin's class id,
+  name, vendor and version (never a path) and, on save, its settings as a file in
+  `plugin-state/`. File format 6. The loaded plugins follow the project after every command, so
+  undo, redo, open and crash recovery need nothing of their own: undoing "remove instrument"
+  brings the plugin back with the settings it had. A plugin not installed on this machine shows
+  as "not installed" on the track, and its saved settings are kept untouched through saves.
+- **Keyboards** (`crucible-midi-io::connect`): every keyboard connected is opened while at least
+  one instrument is loaded (and let go when none is, so other programs can have it); plugging in
+  and out is noticed within two seconds. The keyboards play the tracks whose keyboard button is
+  lit: the newest instrument at first, one click moves them to another track, Ctrl+click plays
+  several at once. This is where he is working, like the play position: not saved in the project.
+  `track.input <track> <keyboard> --channel n` makes a track listen to one keyboard, or one MIDI
+  channel, or both; that is saved. The default stays as `07-hardware-and-testing.md` asks: every
+  keyboard, every channel, no name bound.
+- **The sound** (`play.rs`): instrument tracks are mixed inside the audio device's own callback,
+  so a key is heard in the next device buffer (3.3 ms on the dev laptop), not 40 ms later as the
+  rest of playback is. The device stays open while an instrument is loaded, Play and Stop or not.
+  Notes in MIDI clips play at their exact sample; the window's piano roll is how they are written
+  for now. Export tells each plugin it is an offline render and waits for it, and the instruments'
+  live sound pauses while the export runs. The test proves the live playing of clip notes equals
+  the export sample for sample.
+- **Its window floats above Crucible's** (owner window on Windows, seam 2: `editor_window.rs`).
+- **Main thread**: VST3 wants load, settings and windows on one thread, the one that runs the
+  windows. The window program hands those calls to Tauri's main thread and waits; the command
+  line program runs them where it is.
+- **A test instrument** (`crates/crucible-test-synth`): a real VST3 plugin (sine tones, one
+  setting, a sustain-pedal mapping, a small window), built with the workspace and never shipped
+  or installed. It exists because this laptop has no plugins and none may be installed without
+  his yes. Every test above runs against it, through the same loader and window code as any
+  plugin.
+
+**Costs and limits, said plainly:**
+
+- **One lock between the plugin's sound and its settings.** vst3-host keeps a plugin's audio side
+  and its settings and window side in one object. The audio thread tries for it for 0.15 ms and
+  otherwise gives that one block up as silence (keys in it are kept for the next block since a
+  fix on 2026-11-27; before, they could be lost and leave a note stuck). Reading or restoring a
+  big instrument's settings (Keyscape's, at save) or opening its window can therefore cost that
+  instrument a few milliseconds of silence. Each such block is counted and goes into the log.
+  The fix is a host layer of our own over the lower-level `vst3` bindings that keeps the two
+  sides apart (`02-architecture.md`, "Processor and editor split"): days of work, worth doing if
+  he hears it.
+- **Loading an instrument freezes the window** for as long as the plugin takes to load, because
+  VST3 requires the main thread. Most instruments load their samples afterwards on their own
+  threads, so this should be a second or two (unverified for Keyscape).
+- **Exclusive and ASIO drivers**: with an instrument loaded, Crucible holds the audio device all
+  the time, as other DAWs do; other programs go quiet on that output until the instrument is
+  removed or Crucible closes. The Shared driver avoids that at some latency.
+- **A Windows keyboard can be open in one program at a time** (WinMM). With Reaper open and
+  holding the Axiom, Crucible cannot open it; the keyboard button's tooltip and the "Keyboard
+  and channel" dialog say which keyboard could not be opened and why.
+- **Plugins run inside Crucible.** A plugin that crashes while playing takes Crucible with it;
+  the crash journal keeps the edits, and the log names the plugin's file. Scanning is isolated.
+- **Not built:** recording what is played into a clip (M3), VST3 effects (M4), plugin delay
+  compensation (M3), automation, program changes (VST3 has no program-change event; presets are
+  the plugin's own business, in its window).
+
+Verified by machine (dev laptop, test instrument): 88 unit tests, 88 GUI checks (19 new: picker,
+scan, search, load, its window opening, floating and being closed, a key heard through the audio
+device and stopping, the keyboard button, the keyboard dialog, remove and undo, an export with
+notes at the exact level, playing live again afterwards). Seen once in six GUI runs: a key after
+an export was silent; not seen again in five runs after the lost-keys fix; cause not proven.
+Not verified: any real plugin (Keyscape or a free one), a real keyboard, anything audible.
 
 ---
 
@@ -807,3 +996,7 @@ Verified on 2026-11-19 unless noted. Sources in `10-references.md`.
 - vst3-host's `play_with_backend` locks the plugin mutex inside the audio callback. Its
   `RealtimePluginRunner` is lock-free but owns the plugin, so the editor cannot reach it. The
   real engine needs its own split between processor and editor (read in its source, 2026-11-20).
+- vst3-host 0.11.1 counts note presses per channel and key but never drops a note, and it applies
+  a controller a plugin maps (the sustain pedal) as a parameter change itself (read in its source,
+  2026-11-27). Its `PluginWindow` registers the class `VST3PluginWindow` and makes top-level
+  windows with no owner (read 2026-11-27; `editor_window.rs` gives them one).

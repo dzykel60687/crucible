@@ -87,6 +87,11 @@ fn main() {
     }
 
     let mut cli = Cli { engine: Engine::new(), json, depth: 0 };
+    // Commands run on this, the main thread, so plugins are loaded and asked here directly; a
+    // scan asks each plugin in a child copy of this program.
+    if let Ok(exe) = std::env::current_exe() {
+        cli.engine.set_probe(crucible_plugin_host::ProbeCommand { exe, args_before_path: vec![PROBE_SUBCOMMAND.to_string()] });
+    }
     let result = globals.and_then(|()| {
         if let Some(p) = &project {
             cli.exec_print(&["project.open".into(), p.clone()])?;
@@ -106,6 +111,8 @@ fn main() {
         }
         Ok(())
     });
+    // Plugins are taken down and the audio device released before the log is finished.
+    cli.engine.close();
     std::process::exit(diag::finish(result));
 }
 
@@ -283,16 +290,6 @@ static HOST: &[Spec<Cli>] = &[
     },
     Spec { name: "midi.inputs", args: &[], help: "List MIDI input ports.", effect: Effect::System, run: midi_inputs },
     Spec {
-        name: "plugin.scan",
-        args: &[
-            opt("folder", Kind::Text, "scan this folder instead of the standard VST3 folders"),
-            opt("timeout", Kind::Int, "seconds allowed per plugin (default 60)"),
-        ],
-        help: "Find VST3 plugins and probe each one in its own process.",
-        effect: Effect::System,
-        run: plugin_scan,
-    },
-    Spec {
         name: "run",
         args: &[req("file", Kind::Text, "a text file of commands, one per line")],
         help: "Run a script file. Stops at the first error.",
@@ -396,13 +393,6 @@ fn midi_inputs(_: &mut Cli, _: &Args) -> Result<Reply, DawError> {
     if let Some(e) = report.error.as_deref().and_then(DawError::parse) {
         return Err(e);
     }
-    Ok(Reply::new(text.trim_end().to_string(), json!(report)))
-}
-
-fn plugin_scan(_: &mut Cli, a: &Args) -> Result<Reply, DawError> {
-    let report = scan_plugins(a)?;
-    let text = format_plugins(&report);
-    diag::raw("plugins", &text);
     Ok(Reply::new(text.trim_end().to_string(), json!(report)))
 }
 

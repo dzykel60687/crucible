@@ -1,6 +1,6 @@
 // UI state: the engine's state (the truth, replaced after every command) plus view-only choices
 // such as which track is selected. Views redraw when either changes.
-import { exec, type Reply, type State } from './engine'
+import { exec, PPQ, type Reply, type State } from './engine'
 import { trail } from './trail'
 
 export type Tab = 'mixer' | 'piano' | 'clip' | 'console'
@@ -111,6 +111,16 @@ export function bpb(): number {
   const [n, d] = state.project.time_signature
   return n * 4 / d
 }
+
+/** Where the last clip ends, in beats. */
+export function lastSound(): number {
+  let end = 0
+  for (const c of state.project.clips) end = Math.max(end, c.start + c.length)
+  return end / PPQ
+}
+/** Where the song ends, in beats (D-043): the last clip's end, or further out if the end was
+ *  moved there. Playback stops here, plus whatever the effects still ring out. */
+export const songEnd = () => Math.max(lastSound(), (state.project.end ?? 0) / PPQ)
 
 export function track(id: number | null) {
   return state.project.tracks.find((t) => t.id === id)
